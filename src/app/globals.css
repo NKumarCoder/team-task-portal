@@ -1,26 +1,230 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #f8fafc;
+    --foreground: #0f172a;
+    
+    --card: rgba(255, 255, 255, 0.65);
+    --card-foreground: #0f172a;
+    --card-border: rgba(148, 163, 184, 0.12);
+    
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    
+    --primary: #6366f1; /* indigo-500 */
+    --primary-foreground: #ffffff;
+    
+    --secondary: #f1f5f9;
+    --secondary-foreground: #0f172a;
+    
+    --muted: #f8fafc;
+    --muted-foreground: #64748b;
+    
+    --accent: #f1f5f9;
+    --accent-foreground: #0f172a;
+    
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+    
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: rgba(99, 102, 241, 0.3);
+    
+    --radius: 0.75rem;
+
+    /* Status Colors */
+    --pending-bg: rgba(245, 158, 11, 0.1);
+    --pending-text: #d97706;
+    --inprogress-bg: rgba(59, 130, 246, 0.1);
+    --inprogress-text: #2563eb;
+    --testing-bg: rgba(139, 92, 246, 0.1);
+    --testing-text: #7c3aed;
+    --completed-bg: rgba(16, 185, 129, 0.1);
+    --completed-text: #059669;
+    --overdue-bg: rgba(239, 68, 68, 0.1);
+    --overdue-text: #dc2626;
+  }
+
+  .dark {
+    --background: #09090b;
+    --foreground: #f4f4f5;
+    
+    --card: rgba(24, 24, 27, 0.65);
+    --card-foreground: #f4f4f5;
+    --card-border: rgba(255, 255, 255, 0.06);
+    
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    
+    --primary: #6366f1; /* indigo-500 */
+    --primary-foreground: #ffffff;
+    
+    --secondary: #1e1b4b; /* deep indigo */
+    --secondary-foreground: #f4f4f5;
+    
+    --muted: #18181b;
+    --muted-foreground: #a1a1aa;
+    
+    --accent: #27272a;
+    --accent-foreground: #f4f4f5;
+    
+    --destructive: #f87171;
+    --destructive-foreground: #ffffff;
+    
+    --border: #27272a;
+    --input: #27272a;
+    --ring: rgba(99, 102, 241, 0.5);
+
+    /* Status Colors */
+    --pending-bg: rgba(245, 158, 11, 0.15);
+    --pending-text: #fbbf24;
+    --inprogress-bg: rgba(59, 130, 246, 0.15);
+    --inprogress-text: #60a5fa;
+    --testing-bg: rgba(139, 92, 246, 0.15);
+    --testing-text: #a78bfa;
+    --completed-bg: rgba(16, 185, 129, 0.15);
+    --completed-text: #34d399;
+    --overdue-bg: rgba(239, 68, 68, 0.15);
+    --overdue-text: #f87171;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@theme {
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-card-border: var(--card-border);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+/* Glassmorphism Styles */
+.glass-panel {
+  background: var(--card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.04);
+}
+
+.dark .glass-panel {
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.glass-card-hover {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.glass-card-hover:hover {
+  transform: translateY(-4px);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.08);
+}
+
+.dark .glass-card-hover:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.15);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Background Gradients */
+.bg-glow-purple {
+  position: absolute;
+  width: 350px;
+  height: 350px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.15) 0%, rgba(0,0,0,0) 70%);
+  filter: blur(40px);
+  pointer-events: none;
+}
+
+.bg-glow-blue {
+  position: absolute;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, rgba(0,0,0,0) 70%);
+  filter: blur(40px);
+  pointer-events: none;
+}
+
+/* Status Badges styling */
+.status-pending {
+  background-color: var(--pending-bg);
+  color: var(--pending-text);
+}
+.status-inprogress {
+  background-color: var(--inprogress-bg);
+  color: var(--inprogress-text);
+}
+.status-testing {
+  background-color: var(--testing-bg);
+  color: var(--testing-text);
+}
+.status-completed {
+  background-color: var(--completed-bg);
+  color: var(--completed-text);
+}
+.status-overdue {
+  background-color: var(--overdue-bg);
+  color: var(--overdue-text);
 }
