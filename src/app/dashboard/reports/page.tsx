@@ -55,7 +55,7 @@ export default function ReportsPage() {
   // Compute status share for the current active tasks list
   const pieData = [
     { name: 'Assigned', value: tasks.filter(t => t.status === 'assigned' || t.status === 'on-hold').length },
-    { name: 'In Progress', value: tasks.filter(t => t.status === 'in-progress' || t.status === 'development-completed' || t.status === 'code-review').length },
+    { name: 'In Progress', value: tasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'development-completed' || t.status === 'code-review').length },
     { name: 'Testing', value: tasks.filter(t => t.status === 'testing' || t.status === 'uat').length },
     { name: 'Completed', value: tasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live' || t.status === 'deployed').length },
     { name: 'Blocked', value: tasks.filter(t => t.status === 'blocked').length },

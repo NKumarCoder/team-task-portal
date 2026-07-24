@@ -28,6 +28,7 @@ export interface Member {
 export type TaskStatus = 
   | 'assigned' 
   | 'in-progress' 
+  | 'supplier-pending'
   | 'development-completed' 
   | 'code-review' 
   | 'testing' 

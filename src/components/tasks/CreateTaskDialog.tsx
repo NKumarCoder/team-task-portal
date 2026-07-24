@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, Loader2, Check, Copy } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
-import { Task, TaskPriority, TaskStatus, Member, Project } from '@/types';
+import { Task, TaskPriority, TaskStatus, Member, Project, Attachment } from '@/types';
 import toast from 'react-hot-toast';
 import { TASK_PRIORITIES } from '@/constants';
 import { formatDate } from '@/utils';
@@ -52,6 +52,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   const [newProjectName, setNewProjectName] = useState('');
   const [addingProject, setAddingProject] = useState(false);
   const [createdTask, setCreatedTask] = useState<Task | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const isEditMode = !!taskToEdit;
   const isMemberAndEditing = isEditMode && user?.role === 'Member';
@@ -190,6 +191,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         remarks: taskToEdit.remarks || '',
       });
     } else if (isOpen && !taskToEdit) {
+      setSelectedFiles([]);
       reset({
         projectName: '',
         title: '',
@@ -283,8 +285,28 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           statusHistory: initialHistory,
         };
 
-        const created = await dbService.addTask(newTask, user?.email, user?.displayName);
-        toast.success('Task created successfully');
+        // Convert selected files to base64 attachments
+        const attachmentsData = [];
+        for (const file of selectedFiles) {
+          try {
+            const content = await readAsBase64(file);
+            attachmentsData.push({
+              name: file.name,
+              size: file.size,
+              content: content,
+              type: file.type
+            });
+          } catch (err) {
+            console.error('Failed to read file:', file.name, err);
+          }
+        }
+
+        const toastId = toast.loading('Creating task...');
+        const created = await dbService.addTask(newTask, user?.email, user?.displayName, attachmentsData);
+        toast.success('Task created successfully!', { id: toastId });
+
+        setSelectedFiles([]);
+        setSaving(false);
         setCreatedTask(created);
         return;
       }
@@ -301,8 +323,34 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       onSuccess(createdTask);
       setCreatedTask(null);
     }
+    setSelectedFiles([]);
     onClose();
   };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const newFiles = Array.from(files);
+    setSelectedFiles(prev => [...prev, ...newFiles]);
+  };
+
+  const removeSelectedFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const readAsBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+
 
   return (
     <AnimatePresence>
@@ -574,11 +622,55 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                 <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</label>
                 <textarea
                   rows={4}
-                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[80px]"
+                  disabled={isMemberAndEditing}
+                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[80px] disabled:opacity-75 disabled:cursor-not-allowed"
                   placeholder="Explain details, expectations, or requirements..."
                   {...register('description')}
                 />
               </div>
+
+              {/* Attachments Section (Only for task creation/email) */}
+              {!isEditMode && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                      Attachments for Email (Logs, Text Files, PDFs, Images)
+                    </label>
+                    <label className="text-[10px] text-primary hover:underline font-bold cursor-pointer focus:outline-none">
+                      + Add File(s)
+                      <input
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileChange}
+                        disabled={saving}
+                      />
+                    </label>
+                  </div>
+
+                  {selectedFiles.length > 0 && (
+                    <div className="space-y-1.5 max-h-[120px] overflow-y-auto bg-slate-950/40 p-2.5 rounded-lg border border-border">
+                      {selectedFiles.map((file, idx) => {
+                        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                        return (
+                          <div key={idx} className="flex items-center justify-between p-1.5 rounded-md bg-background/50 border border-border/60 text-xs">
+                            <span className="truncate flex-1 font-medium pr-3 text-foreground" title={file.name}>
+                              📎 {file.name} <span className="text-[10px] text-muted-foreground">({sizeMB} MB)</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeSelectedFile(idx)}
+                              className="text-destructive hover:text-destructive/80 transition-colors font-bold cursor-pointer"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Row 6: Remarks (Optional) */}
               <div className="space-y-1">

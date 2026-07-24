@@ -193,7 +193,7 @@ export default function DashboardHome() {
     const completed = filteredTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live').length;
     const pending = filteredTasks.filter(t => t.status === 'assigned' || t.status === 'on-hold').length;
     const testing = filteredTasks.filter(t => t.status === 'testing' || t.status === 'uat').length;
-    const inProgress = filteredTasks.filter(t => t.status === 'in-progress' || t.status === 'development-completed' || t.status === 'code-review').length;
+    const inProgress = filteredTasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'development-completed' || t.status === 'code-review').length;
     const blocked = filteredTasks.filter(t => t.status === 'blocked').length;
     const critical = filteredTasks.filter(t => t.priority === 'critical').length;
 
@@ -420,7 +420,7 @@ export default function DashboardHome() {
       let statusKey = t.status;
       if (t.status === 'moved-to-live' || t.status === 'deployed') statusKey = 'completed';
       else if (t.status === 'on-hold') statusKey = 'assigned';
-      else if (t.status === 'development-completed' || t.status === 'code-review') statusKey = 'in-progress';
+      else if (t.status === 'development-completed' || t.status === 'code-review' || t.status === 'supplier-pending') statusKey = 'in-progress';
       else if (t.status === 'uat') statusKey = 'testing';
       
       if (statusMap[statusKey] !== undefined) {
@@ -687,6 +687,7 @@ export default function DashboardHome() {
               <option value="all">All Statuses</option>
               <option value="assigned">Assigned</option>
               <option value="in-progress">In Progress</option>
+              <option value="supplier-pending">Supplier Pending</option>
               <option value="testing">Testing</option>
               <option value="ready-for-deployment">Ready for Deployment</option>
               <option value="completed">Completed</option>

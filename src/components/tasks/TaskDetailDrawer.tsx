@@ -349,6 +349,57 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                   </div>
                 )}
 
+                {/* Attachments Section */}
+                {task.attachments && task.attachments.length > 0 && (
+                  <div className="space-y-3">
+                    <label className="text-[10px] uppercase font-bold text-gray-400 flex items-center gap-2 tracking-wider">
+                      <Paperclip className="h-4 w-4 text-primary" />
+                      Attachments ({task.attachments.length})
+                    </label>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                      {task.attachments.map((att) => {
+                        const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(att.name);
+                        const FileIcon = isImage ? ImageIcon : FileArchive;
+                        const sizeMB = (att.size / (1024 * 1024)).toFixed(2);
+
+                        return (
+                          <div
+                            key={att.id}
+                            className="flex items-center justify-between p-2 rounded-lg bg-slate-950/40 border border-slate-800 hover:border-slate-700 transition-colors gap-3 group"
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <div className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-gray-400 shrink-0">
+                                <FileIcon className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-semibold text-gray-300 truncate" title={att.name}>
+                                  {att.name}
+                                </p>
+                                <p className="text-[9px] text-gray-500">
+                                  {sizeMB} MB • by {att.uploadedByName || att.uploadedBy.split('@')[0]}
+                                </p>
+                              </div>
+                            </div>
+                            
+                            <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
+                              <a
+                                href={att.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-1 rounded bg-slate-800 hover:bg-slate-750 text-gray-400 hover:text-white transition-colors cursor-pointer"
+                                title="Open in new tab"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {/* Subtasks */}
                 {subtasks.length > 0 && (
                   <div className="space-y-3">

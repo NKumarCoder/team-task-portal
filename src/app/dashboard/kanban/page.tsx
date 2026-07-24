@@ -29,6 +29,7 @@ import toast from 'react-hot-toast';
 const COLUMNS: { id: TaskStatus; label: string; bg: string; border: string; text: string }[] = [
   { id: 'assigned', label: 'Assigned', bg: 'bg-zinc-500/5', border: 'border-zinc-500/10', text: 'text-zinc-400' },
   { id: 'in-progress', label: 'In Progress', bg: 'bg-blue-500/5', border: 'border-blue-500/10', text: 'text-blue-400' },
+  { id: 'supplier-pending', label: 'Supplier Pending', bg: 'bg-amber-500/5', border: 'border-amber-500/10', text: 'text-amber-400' },
   { id: 'development-completed', label: 'Dev Done', bg: 'bg-indigo-500/5', border: 'border-indigo-500/10', text: 'text-indigo-400' },
   { id: 'code-review', label: 'Code Review', bg: 'bg-orange-500/5', border: 'border-orange-500/10', text: 'text-orange-400' },
   { id: 'testing', label: 'Testing', bg: 'bg-purple-500/5', border: 'border-purple-500/10', text: 'text-purple-400' },

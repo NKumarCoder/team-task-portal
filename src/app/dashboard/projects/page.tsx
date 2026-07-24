@@ -90,7 +90,7 @@ export default function ProjectsPage() {
     const projectTasks = tasks.filter(t => t.projectName.toLowerCase() === projectName.toLowerCase());
     const total = projectTasks.length;
     const completed = projectTasks.filter(t => ['completed', 'deployed', 'moved-to-live'].includes(t.status)).length;
-    const inProgress = projectTasks.filter(t => ['in-progress', 'development-completed', 'code-review', 'testing', 'uat'].includes(t.status)).length;
+    const inProgress = projectTasks.filter(t => ['in-progress', 'supplier-pending', 'development-completed', 'code-review', 'testing', 'uat'].includes(t.status)).length;
     const blocked = projectTasks.filter(t => t.status === 'blocked').length;
     const pending = total - completed - inProgress - blocked;
     

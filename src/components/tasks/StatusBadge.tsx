@@ -19,6 +19,10 @@ export default function StatusBadge({ status, className }: StatusBadgeProps) {
       color: 'bg-blue-500/10 text-blue-600 border-blue-500/25 dark:text-blue-400',
       label: 'In Progress',
     },
+    'supplier-pending': {
+      color: 'bg-orange-500/10 text-orange-600 border-orange-500/25 dark:text-orange-400',
+      label: 'Supplier Pending',
+    },
     'development-completed': {
       color: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/25 dark:text-indigo-400',
       label: 'Dev Completed',

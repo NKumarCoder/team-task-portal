@@ -10,6 +10,7 @@ export const TASK_PRIORITIES: { value: TaskPriority; label: string; color: strin
 export const TASK_STATUSES: { value: TaskStatus; label: string; color: string }[] = [
   { value: 'assigned', label: 'Assigned', color: '#3b82f6' },
   { value: 'in-progress', label: 'In Progress', color: '#6366f1' },
+  { value: 'supplier-pending', label: 'Supplier Pending', color: '#f59e0b' },
   { value: 'development-completed', label: 'Development Completed', color: '#10b981' },
   { value: 'code-review', label: 'Code Review', color: '#f59e0b' },
   { value: 'testing', label: 'Testing', color: '#a855f7' },

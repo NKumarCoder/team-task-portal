@@ -696,6 +696,7 @@ export default function AllTasksPage() {
                     <option value="all">All Statuses</option>
                     <option value="assigned">Assigned</option>
                     <option value="in-progress">In Progress</option>
+                    <option value="supplier-pending">Supplier Pending</option>
                     <option value="development-completed">Dev Completed</option>
                     <option value="code-review">Code Review</option>
                     <option value="testing">Testing</option>
