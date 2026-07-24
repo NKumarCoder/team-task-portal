@@ -11,7 +11,8 @@ import {
   onSnapshot,
   deleteDoc,
   orderBy,
-  limit
+  limit,
+  collection
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../firebase/config';
 import { 
@@ -46,6 +47,13 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T
         resolve(fallbackValue);
       });
   });
+}
+
+export interface MailAttachment {
+  name: string;
+  size: number;
+  content: string; // base64 string
+  type: string;
 }
 
 class DBService {
@@ -169,7 +177,12 @@ class DBService {
     }
   }
 
-  async addTask(task: Omit<Task, 'id' | 'taskId' | 'isDeleted'>, userEmail?: string, userName?: string): Promise<Task> {
+  async addTask(
+    task: Omit<Task, 'id' | 'taskId' | 'isDeleted'>,
+    userEmail?: string,
+    userName?: string,
+    attachments?: MailAttachment[]
+  ): Promise<Task> {
     console.log("[dbService] Adding task:", task.title);
     const start = performance.now();
     const nextTaskId = await this.getNextTaskId();
@@ -213,6 +226,93 @@ class DBService {
         read: false,
         timestamp: new Date().toISOString()
       });
+    }
+
+    // Trigger Email Notification in the background (sent to assignee, CC to assigner/creator)
+    try {
+      const assigneeEmail = task.assigneeId.toLowerCase();
+      const assignerEmail = (userEmail || task.createdBy).toLowerCase();
+      
+      const mailPayload: any = {
+        to: assigneeEmail,
+        subject: `[Task Allocated] Task ${savedTask.taskId}: ${task.title}`,
+        html: `
+          <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 8px;">
+            <h2 style="color: #4f46e5; margin-top: 0;">Task Assigned</h2>
+            <p>Hello,</p>
+            <p>A new task has been assigned to you in the Team Task Portal.</p>
+            <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280; width: 140px;">Task ID:</td>
+                <td style="padding: 6px 0; font-family: monospace; font-weight: bold; color: #111827;">${savedTask.taskId}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280;">Project:</td>
+                <td style="padding: 6px 0; color: #111827;">${task.projectName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280;">Module:</td>
+                <td style="padding: 6px 0; color: #111827;">${task.module}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280;">Priority:</td>
+                <td style="padding: 6px 0; color: #111827; text-transform: capitalize;">${task.priority}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280;">Due Date:</td>
+                <td style="padding: 6px 0; color: #111827;">${task.expectedCompletionDate ? formatDate(task.expectedCompletionDate) : 'No due date'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280;">Description:</td>
+                <td style="padding: 6px 0; color: #111827; white-space: pre-wrap;">${task.description || 'No description'}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; font-weight: bold; color: #6b7280;">Remarks:</td>
+                <td style="padding: 6px 0; color: #111827; white-space: pre-wrap;">${task.remarks || 'No remarks'}</td>
+              </tr>
+            </table>
+            <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+            <p style="font-size: 12px; color: #9ca3af;">This is an automated message. Please do not reply directly to this email.</p>
+          </div>
+        `
+      };
+
+      // CC to the creator/assigner if they are not the same person as the assignee
+      if (assignerEmail && assignerEmail !== assigneeEmail) {
+        mailPayload.cc = assignerEmail;
+      }
+
+      // Add attachments if provided
+      if (attachments && attachments.length > 0) {
+        mailPayload.attachments = attachments.map((att) => ({
+          filename: att.name,
+          content: att.content,
+          encoding: 'base64',
+        }));
+      }
+
+      // Call the Next.js SMTP API Route asynchronously (background task)
+      fetch('/api/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(mailPayload),
+      })
+        .then((response) => response.json())
+        .then((resData) => {
+          if (resData.success) {
+            console.log(`[dbService] Background SMTP email sent successfully for task ${savedTask.taskId}`);
+          } else {
+            console.warn(`[dbService] Background SMTP API failed:`, resData.error);
+          }
+        })
+        .catch((fetchError) => {
+          console.error("[dbService] Background SMTP API network/fetch error:", fetchError);
+        });
+    } catch (mailError) {
+      console.error("[dbService] Failed to queue task allocation email:", mailError);
     }
 
     return savedTask;
@@ -537,8 +637,19 @@ class DBService {
 
     // Path: tasks/{taskId}/{attachmentId}_{name}
     const storageRef = ref(storage, `tasks/${taskId}/${attachmentId}_${file.name}`);
-    const snap = await uploadBytes(storageRef, file);
-    const downloadUrl = await getDownloadURL(snap.ref);
+    
+    // Timeout helper
+    const withStorageTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+      return Promise.race([
+        promise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Firebase Storage operation timed out')), timeoutMs)
+        )
+      ]);
+    };
+
+    const snap = await withStorageTimeout(uploadBytes(storageRef, file), 8500);
+    const downloadUrl = await withStorageTimeout(getDownloadURL(snap.ref), 4000);
 
     const attachment: Attachment = {
       id: attachmentId,

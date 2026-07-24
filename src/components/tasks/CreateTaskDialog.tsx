@@ -5,12 +5,13 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Sparkles, Loader2, Check } from 'lucide-react';
+import { X, Sparkles, Loader2, Check, Copy } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
-import { Task, TaskPriority, TaskStatus, Member, Project } from '@/types';
+import { Task, TaskPriority, TaskStatus, Member, Project, Attachment } from '@/types';
 import toast from 'react-hot-toast';
 import { TASK_PRIORITIES } from '@/constants';
+import { formatDate } from '@/utils';
 
 const taskFormSchema = z.object({
   projectName: z.string().min(1, 'Project Name is required'),
@@ -50,6 +51,8 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   const [showAddProject, setShowAddProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [addingProject, setAddingProject] = useState(false);
+  const [createdTask, setCreatedTask] = useState<Task | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   const isEditMode = !!taskToEdit;
   const isMemberAndEditing = isEditMode && user?.role === 'Member';
@@ -157,6 +160,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
 
   // Handle Edit Prepopulation
   useEffect(() => {
+    setCreatedTask(null);
     if (isOpen && taskToEdit) {
       // Format ISO string to YYYY-MM-DD
       const rawDate = taskToEdit.expectedCompletionDate;
@@ -187,6 +191,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         remarks: taskToEdit.remarks || '',
       });
     } else if (isOpen && !taskToEdit) {
+      setSelectedFiles([]);
       reset({
         projectName: '',
         title: '',
@@ -280,9 +285,30 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           statusHistory: initialHistory,
         };
 
-        const created = await dbService.addTask(newTask, user?.email, user?.displayName);
-        toast.success('Task created successfully');
-        onSuccess(created);
+        // Convert selected files to base64 attachments
+        const attachmentsData = [];
+        for (const file of selectedFiles) {
+          try {
+            const content = await readAsBase64(file);
+            attachmentsData.push({
+              name: file.name,
+              size: file.size,
+              content: content,
+              type: file.type
+            });
+          } catch (err) {
+            console.error('Failed to read file:', file.name, err);
+          }
+        }
+
+        const toastId = toast.loading('Creating task...');
+        const created = await dbService.addTask(newTask, user?.email, user?.displayName, attachmentsData);
+        toast.success('Task created successfully!', { id: toastId });
+
+        setSelectedFiles([]);
+        setSaving(false);
+        setCreatedTask(created);
+        return;
       }
       onClose();
     } catch (e: any) {
@@ -291,6 +317,40 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       setSaving(false);
     }
   };
+
+  const handleClose = () => {
+    if (createdTask) {
+      onSuccess(createdTask);
+      setCreatedTask(null);
+    }
+    setSelectedFiles([]);
+    onClose();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const newFiles = Array.from(files);
+    setSelectedFiles(prev => [...prev, ...newFiles]);
+  };
+
+  const removeSelectedFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const readAsBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+
 
   return (
     <AnimatePresence>
@@ -301,7 +361,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.5 }}
             exit={{ opacity: 0 }}
-            onClick={onClose}
+            onClick={handleClose}
             className="fixed inset-0 bg-black/60 backdrop-blur-xs"
           />
 
@@ -312,20 +372,96 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
             className="relative w-full max-w-xl glass-panel bg-card/90 rounded-2xl p-5 shadow-2xl border border-card-border overflow-hidden backdrop-blur-lg flex flex-col max-h-[85vh]"
           >
-            {/* Header */}
-            <div className="flex justify-between items-center pb-3 border-b border-card-border mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-                  <Sparkles className="h-4 w-4" />
+            {createdTask ? (
+              <div className="flex flex-col items-center justify-center py-6 text-center space-y-5 flex-1 select-none">
+                {/* Success Sparkle Icon */}
+                <div className="w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center animate-bounce shadow-lg shadow-emerald-500/10">
+                  <Sparkles className="h-8 w-8 animate-pulse" />
                 </div>
-                <h2 className="text-lg font-bold tracking-tight">
-                  {isEditMode ? `Edit Task: ${taskToEdit?.taskId}` : 'Create Development Task'}
-                </h2>
+
+                <div className="space-y-1">
+                  <h3 className="text-xl font-extrabold tracking-tight text-white">Task Created Successfully!</h3>
+                  <p className="text-xs text-muted-foreground">The development task is now saved in the workspace.</p>
+                </div>
+
+                {/* monospaced ticket ID card */}
+                <div className="w-full max-w-sm glass-panel bg-slate-950/60 p-4 rounded-xl border border-slate-800/80 flex items-center justify-between gap-4">
+                  <div className="text-left">
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">Ticket ID</span>
+                    <code className="text-base font-black text-primary font-mono tracking-wide">{createdTask.taskId}</code>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(createdTask.taskId);
+                      toast.success('Ticket ID copied to clipboard!');
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 hover:bg-primary/20 text-xs font-bold text-primary transition-all border border-primary/20 cursor-pointer"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    <span>Copy ID</span>
+                  </button>
+                </div>
+
+                {/* Task Details Card */}
+                <div className="w-full max-w-sm text-left glass-panel bg-card/40 p-4 rounded-xl border border-card-border/60 text-xs space-y-2.5">
+                  <div>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">Project</span>
+                    <span className="font-semibold text-foreground">{createdTask.projectName}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">Title</span>
+                    <span className="font-semibold text-foreground">{createdTask.title}</span>
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">Assigned To</span>
+                    <span className="font-semibold text-foreground">{createdTask.assigneeName}</span>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-3 justify-center w-full max-w-sm pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const shareText = `Ticket: ${createdTask.taskId}\nProject: ${createdTask.projectName}\nTitle: ${createdTask.title}\nAssigned To: ${createdTask.assigneeName}\nDue Date: ${formatDate(createdTask.expectedCompletionDate)}\nLink: ${window.location.origin}/dashboard`;
+                      navigator.clipboard.writeText(shareText);
+                      toast.success('Share details copied to clipboard!');
+                    }}
+                    className="flex-1 py-2 rounded-xl border border-card-border hover:bg-accent/40 text-xs font-bold transition-all cursor-pointer text-muted-foreground hover:text-foreground flex items-center justify-center gap-1.5"
+                  >
+                    <Copy className="h-4 w-4" />
+                    <span>Copy Share Text</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSuccess(createdTask);
+                      setCreatedTask(null);
+                      onClose();
+                    }}
+                    className="flex-1 py-2 rounded-xl bg-primary text-primary-foreground font-semibold hover:bg-primary/95 transition-all text-xs shadow-md shadow-primary/25 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    Done
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={onClose}
-                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-              >
+            ) : (
+              <>
+                {/* Header */}
+                <div className="flex justify-between items-center pb-3 border-b border-card-border mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+                      <Sparkles className="h-4 w-4" />
+                    </div>
+                    <h2 className="text-lg font-bold tracking-tight">
+                      {isEditMode ? `Edit Task: ${taskToEdit?.taskId}` : 'Create Development Task'}
+                    </h2>
+                  </div>
+                  <button
+                    onClick={handleClose}
+                    className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+                  >
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -486,11 +622,55 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                 <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</label>
                 <textarea
                   rows={4}
-                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[80px]"
+                  disabled={isMemberAndEditing}
+                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[80px] disabled:opacity-75 disabled:cursor-not-allowed"
                   placeholder="Explain details, expectations, or requirements..."
                   {...register('description')}
                 />
               </div>
+
+              {/* Attachments Section (Only for task creation/email) */}
+              {!isEditMode && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                      Attachments for Email (Logs, Text Files, PDFs, Images)
+                    </label>
+                    <label className="text-[10px] text-primary hover:underline font-bold cursor-pointer focus:outline-none">
+                      + Add File(s)
+                      <input
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileChange}
+                        disabled={saving}
+                      />
+                    </label>
+                  </div>
+
+                  {selectedFiles.length > 0 && (
+                    <div className="space-y-1.5 max-h-[120px] overflow-y-auto bg-slate-950/40 p-2.5 rounded-lg border border-border">
+                      {selectedFiles.map((file, idx) => {
+                        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                        return (
+                          <div key={idx} className="flex items-center justify-between p-1.5 rounded-md bg-background/50 border border-border/60 text-xs">
+                            <span className="truncate flex-1 font-medium pr-3 text-foreground" title={file.name}>
+                              📎 {file.name} <span className="text-[10px] text-muted-foreground">({sizeMB} MB)</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeSelectedFile(idx)}
+                              className="text-destructive hover:text-destructive/80 transition-colors font-bold cursor-pointer"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Row 6: Remarks (Optional) */}
               <div className="space-y-1">
@@ -533,6 +713,8 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
               </div>
 
             </form>
+            </>
+            )}
           </motion.div>
         </div>
       )}
