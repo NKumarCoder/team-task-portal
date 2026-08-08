@@ -36,7 +36,8 @@ import {
   Loader2,
   Download,
   Printer,
-  Check
+  Check,
+  ChevronRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { formatDate } from '@/utils';
@@ -46,6 +47,8 @@ export default function AllTasksPage() {
   const { user } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [projectSearch, setProjectSearch] = useState('');
   
   // Real-time task syncing
   useEffect(() => {
@@ -56,6 +59,44 @@ export default function AllTasksPage() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Compute project stats and details
+  const projectsData = useMemo(() => {
+    const projectNames = Array.from(new Set(tasks.map(t => t.projectName))).filter(Boolean);
+    
+    return projectNames.map(name => {
+      const projectTasks = tasks.filter(t => t.projectName === name);
+      const total = projectTasks.length;
+      const completed = projectTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live').length;
+      const testing = projectTasks.filter(t => t.status === 'testing').length;
+      const inProgress = projectTasks.filter(t => t.status === 'in-progress').length;
+      const blocked = projectTasks.filter(t => t.status === 'blocked').length;
+      const critical = projectTasks.filter(t => t.priority === 'critical').length;
+      
+      const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+      
+      // Extract unique assignees
+      const assigneeMap = new Map<string, { name: string; color: string }>();
+      projectTasks.forEach(t => {
+        if (t.assigneeId && t.assigneeName) {
+          assigneeMap.set(t.assigneeId, { name: t.assigneeName, color: t.assigneeColor });
+        }
+      });
+      const assignees = Array.from(assigneeMap.values());
+
+      return {
+        name,
+        total,
+        completed,
+        testing,
+        inProgress,
+        blocked,
+        critical,
+        progress,
+        assignees
+      };
+    }).sort((a, b) => b.total - a.total);
+  }, [tasks]);
 
   const handleExportCSV = (completedOnly = false) => {
     const list = completedOnly 
@@ -515,12 +556,15 @@ export default function AllTasksPage() {
         matchesBlocked = isSelfBlocked || isDepBlocked;
       }
 
-      return matchesGlobal && matchesTaskId && matchesProject && matchesAssignee && matchesStatus && matchesPriority &&
+      // Selected project filter
+      const matchesSelectedProject = !selectedProject || task.projectName.toLowerCase() === selectedProject.toLowerCase();
+
+      return matchesSelectedProject && matchesGlobal && matchesTaskId && matchesProject && matchesAssignee && matchesStatus && matchesPriority &&
              matchesModule && matchesCreatedBy && matchesDateRange && matchesDueDate && matchesOverdue &&
              matchesCompleted && matchesTesting && matchesDeployment && matchesLive && matchesCritical && matchesBlocked;
     });
   }, [
-    tasks, globalFilter, filterTaskId, filterProject, filterAssignee, filterStatus, filterPriority,
+    tasks, selectedProject, globalFilter, filterTaskId, filterProject, filterAssignee, filterStatus, filterPriority,
     filterModule, filterCreatedBy, filterStartDate, filterEndDate, filterDueDate, filterOverdue,
     filterCompleted, filterTesting, filterDeployment, filterLive, filterCritical, filterBlocked, commentsMap
   ]);
@@ -564,402 +608,578 @@ export default function AllTasksPage() {
     setFilterBlocked(false);
   };
 
+  const getProjectColors = (name: string) => {
+    const hash = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const colors = [
+      { from: 'from-blue-500/20', to: 'to-indigo-500/5', border: 'border-blue-500/20', text: 'text-blue-500' },
+      { from: 'from-emerald-500/20', to: 'to-teal-500/5', border: 'border-emerald-500/20', text: 'text-emerald-500' },
+      { from: 'from-violet-500/20', to: 'to-purple-500/5', border: 'border-violet-500/20', text: 'text-violet-500' },
+      { from: 'from-pink-500/20', to: 'to-rose-500/5', border: 'border-pink-500/20', text: 'text-pink-500' },
+      { from: 'from-amber-500/20', to: 'to-orange-500/5', border: 'border-amber-500/20', text: 'text-amber-500' }
+    ];
+    return colors[hash % colors.length];
+  };
+
   return (
     <div className="space-y-6">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 no-print">
-        <div>
-          <h1 className="text-3xl font-extrabold tracking-tight">Scope Directory</h1>
-          <p className="text-sm text-muted-foreground mt-1">Search, sort, filter, and audit task configurations.</p>
-        </div>
+      {!selectedProject ? (
+        // --- PROJECTS GRID VIEW ---
+        <>
+          {/* Top Header */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 no-print">
+            <div>
+              <h1 className="text-3xl font-extrabold tracking-tight">Scope Directory</h1>
+              <p className="text-sm text-muted-foreground mt-1">Select a project to view and manage its task configurations.</p>
+            </div>
+            
+            {/* Quick Stats Summary */}
+            <div className="flex items-center gap-4 bg-card/45 border border-card-border p-3.5 rounded-2xl backdrop-blur-md">
+              <div className="text-center px-2">
+                <p className="text-[10px] uppercase font-bold text-muted-foreground">Total Projects</p>
+                <p className="text-xl font-extrabold text-foreground">{projectsData.length}</p>
+              </div>
+              <div className="h-8 w-px bg-border/40" />
+              <div className="text-center px-2">
+                <p className="text-[10px] uppercase font-bold text-muted-foreground">Total Tasks</p>
+                <p className="text-xl font-extrabold text-primary">{tasks.length}</p>
+              </div>
+              <div className="h-8 w-px bg-border/40" />
+              <div className="text-center px-2">
+                <p className="text-[10px] uppercase font-bold text-muted-foreground">Completed</p>
+                <p className="text-xl font-extrabold text-emerald-500">
+                  {tasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live').length}
+                </p>
+              </div>
+            </div>
+          </div>
 
-        {/* Exporter Controls */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={handleExportExcel}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
-          >
-            <Download className="h-3.5 w-3.5 text-primary" />
-            <span>Export Excel</span>
-          </button>
-          <button
-            onClick={() => handleExportCSV(false)}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span>Export CSV</span>
-          </button>
-          <button
-            onClick={() => handleExportCSV(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
-          >
-            <Download className="h-3.5 w-3.5 text-emerald-500" />
-            <span>Completed CSV</span>
-          </button>
-          <button
-            onClick={handleExportPDF}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
-          >
-            <Printer className="h-3.5 w-3.5 text-indigo-500" />
-            <span>Print Report (PDF)</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Query Filter and Toggle bar */}
-      <div className="flex flex-col gap-4 bg-card/45 border border-card-border p-4 rounded-2xl backdrop-blur-md">
-        <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
-          {/* Global Search */}
+          {/* Search Project Bar */}
           <div className="relative w-full sm:max-w-xs">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-muted-foreground">
               <Search className="h-4 w-4" />
             </div>
             <input
               type="text"
-              placeholder="Search directory..."
-              value={globalFilter}
-              onChange={(e) => setGlobalFilter(e.target.value)}
+              placeholder="Search projects..."
+              value={projectSearch}
+              onChange={(e) => setProjectSearch(e.target.value)}
               className="w-full pl-9 pr-4 py-1.5 bg-background/50 border border-border rounded-xl outline-none text-sm focus:border-primary/50"
             />
           </div>
 
-          {/* Advanced toggle */}
-          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${showFilters || filterStatus !== 'all' || filterPriority !== 'all' || filterProject || filterTaskId || filterAssignee
-                  ? 'border-primary/40 bg-primary/5 text-primary'
-                  : 'border-border hover:bg-accent/40 text-muted-foreground hover:text-foreground'
-                }`}
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              <span>Advanced Filters</span>
-            </button>
-          </div>
-        </div>
+          {/* Grid of Projects */}
+          {loading ? (
+            <div className="flex h-64 items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : projectsData.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {projectsData
+                .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()))
+                .map((project) => {
+                  const colors = getProjectColors(project.name);
+                  return (
+                    <motion.div
+                      key={project.name}
+                      whileHover={{ y: -4, scale: 1.01 }}
+                      onClick={() => setSelectedProject(project.name)}
+                      className="glass-panel border border-card-border p-5 rounded-2xl hover:border-primary/40 transition-all cursor-pointer flex flex-col justify-between h-[230px]"
+                    >
+                      <div>
+                        {/* Project Header */}
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${colors.from} ${colors.to} border ${colors.border} flex items-center justify-center font-extrabold ${colors.text} text-xs shadow-inner uppercase`}>
+                              {project.name.slice(0, 3)}
+                            </div>
+                            <div>
+                              <h3 className="font-extrabold text-base text-foreground transition-colors truncate max-w-[150px]">
+                                {project.name}
+                              </h3>
+                              <span className="text-xs text-muted-foreground font-semibold">
+                                {project.total} {project.total === 1 ? 'task' : 'tasks'} total
+                              </span>
+                            </div>
+                          </div>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                        </div>
 
-        {/* Collapsible advanced column trays */}
-        <AnimatePresence>
-          {showFilters && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="overflow-hidden border-t border-border/40 pt-4 mt-2 space-y-4"
-            >
-              {/* Input Fields Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                {/* Task ID Search */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Task ID</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. TASK-000001"
-                    value={filterTaskId}
-                    onChange={(e) => setFilterTaskId(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
-                  />
-                </div>
+                        {/* Project Progress */}
+                        <div className="mt-4 space-y-1">
+                          <div className="flex justify-between text-[11px] font-semibold text-muted-foreground">
+                            <span>Progress</span>
+                            <span>{project.progress}%</span>
+                          </div>
+                          <div className="w-full h-2 bg-secondary/30 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-emerald-500 transition-all duration-500"
+                              style={{ width: `${project.progress}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
 
-                {/* Project Search */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Project</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Acme Website"
-                    value={filterProject}
-                    onChange={(e) => setFilterProject(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
-                  />
-                </div>
-
-                {/* Assignee Search */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Assignee</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Sarah"
-                    value={filterAssignee}
-                    onChange={(e) => setFilterAssignee(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
-                  />
-                </div>
-
-                {/* Status Select */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Status</label>
-                  <select
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none cursor-pointer focus:border-primary/40 text-foreground"
-                  >
-                    <option value="all">All Statuses</option>
-                    <option value="assigned">Assigned</option>
-                    <option value="in-progress">In Progress</option>
-                    <option value="supplier-pending">Supplier Pending</option>
-                    <option value="development-completed">Dev Completed</option>
-                    <option value="code-review">Code Review</option>
-                    <option value="testing">Testing</option>
-                    <option value="uat">UAT</option>
-                    <option value="ready-for-deployment">Ready for Deploy</option>
-                    <option value="deployed">Deployed</option>
-                    <option value="moved-to-live">Moved to Live</option>
-                    <option value="completed">Completed</option>
-                    <option value="blocked">Blocked</option>
-                    <option value="on-hold">On Hold</option>
-                    <option value="cancelled">Cancelled</option>
-                  </select>
-                </div>
-
-                {/* Priority Select */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Priority</label>
-                  <select
-                    value={filterPriority}
-                    onChange={(e) => setFilterPriority(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none cursor-pointer focus:border-primary/40 text-foreground"
-                  >
-                    <option value="all">All Priorities</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="critical">Critical</option>
-                  </select>
-                </div>
-
-                {/* Module Search */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Module</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Auth"
-                    value={filterModule}
-                    onChange={(e) => setFilterModule(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
-                  />
-                </div>
-
-                {/* Created By Search */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Created By</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. admin@co.com"
-                    value={filterCreatedBy}
-                    onChange={(e) => setFilterCreatedBy(e.target.value)}
-                    className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
-                  />
-                </div>
-
-                {/* Due Date Match */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Due Date</label>
-                  <input
-                    type="date"
-                    value={filterDueDate}
-                    onChange={(e) => setFilterDueDate(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground cursor-pointer"
-                  />
-                </div>
-
-                {/* Created Start Date */}
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Created From</label>
-                  <input
-                    type="date"
-                    value={filterStartDate}
-                    onChange={(e) => setFilterStartDate(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground cursor-pointer"
-                  />
-                </div>
-
-                {/* Created End Date */}
-                <div className="space-y-1 col-span-1">
-                  <div className="flex justify-between items-center">
-                    <label className="text-[10px] font-bold uppercase text-muted-foreground">Created To</label>
-                    {(filterTaskId || filterProject || filterAssignee || filterStatus !== 'all' || filterPriority !== 'all' || filterModule || filterCreatedBy || filterStartDate || filterEndDate || filterDueDate || filterOverdue || filterCompleted || filterTesting || filterDeployment || filterLive || filterCritical || filterBlocked) && (
-                      <button
-                        onClick={clearFilters}
-                        className="text-[9px] text-destructive font-bold hover:underline cursor-pointer flex items-center gap-0.5"
-                      >
-                        <X className="h-2 w-2" /> Clear
-                      </button>
-                    )}
-                  </div>
-                  <input
-                    type="date"
-                    value={filterEndDate}
-                    onChange={(e) => setFilterEndDate(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground cursor-pointer"
-                  />
-                </div>
-              </div>
-
-              {/* Status and Toggle Tags Grid */}
-              <div className="border-t border-border/20 pt-3 flex flex-wrap gap-2 items-center">
-                <span className="text-[9px] font-bold uppercase text-muted-foreground tracking-wider mr-2">Toggle Overrides:</span>
-                
-                {/* Overdue */}
-                <button
-                  onClick={() => setFilterOverdue(!filterOverdue)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterOverdue
-                    ? 'bg-red-500/10 border-red-500/40 text-red-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterOverdue && <Check className="h-3 w-3" />}
-                  <span>Overdue</span>
-                </button>
-
-                {/* Completed */}
-                <button
-                  onClick={() => setFilterCompleted(!filterCompleted)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterCompleted
-                    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterCompleted && <Check className="h-3 w-3" />}
-                  <span>Completed</span>
-                </button>
-
-                {/* Testing */}
-                <button
-                  onClick={() => setFilterTesting(!filterTesting)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterTesting
-                    ? 'bg-purple-500/10 border-purple-500/40 text-purple-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterTesting && <Check className="h-3 w-3" />}
-                  <span>Testing</span>
-                </button>
-
-                {/* Deployment */}
-                <button
-                  onClick={() => setFilterDeployment(!filterDeployment)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterDeployment
-                    ? 'bg-indigo-500/10 border-indigo-500/40 text-indigo-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterDeployment && <Check className="h-3 w-3" />}
-                  <span>Deployment</span>
-                </button>
-
-                {/* Live */}
-                <button
-                  onClick={() => setFilterLive(!filterLive)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterLive
-                    ? 'bg-sky-500/10 border-sky-500/40 text-sky-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterLive && <Check className="h-3 w-3" />}
-                  <span>Live</span>
-                </button>
-
-                {/* Critical */}
-                <button
-                  onClick={() => setFilterCritical(!filterCritical)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterCritical
-                    ? 'bg-orange-500/10 border-orange-500/40 text-orange-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterCritical && <Check className="h-3 w-3" />}
-                  <span>Critical</span>
-                </button>
-
-                {/* Blocked */}
-                <button
-                  onClick={() => setFilterBlocked(!filterBlocked)}
-                  className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterBlocked
-                    ? 'bg-pink-500/10 border-pink-500/40 text-pink-500 shadow-sm'
-                    : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
-                >
-                  {filterBlocked && <Check className="h-3 w-3" />}
-                  <span>Blocked</span>
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* Main Table view */}
-      {loading ? (
-        <div className="flex h-64 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        </div>
-      ) : filteredTasks.length > 0 ? (
-        <div className="space-y-4">
-          {/* Sticky Header Glass Table Container */}
-          <div className="glass-panel rounded-2xl overflow-hidden overflow-x-auto max-h-[60vh]">
-            <table className="w-full border-collapse">
-              <thead className="sticky top-0 z-10 bg-card/90 backdrop-blur-md shadow-sm border-b border-card-border">
-                {table.getHeaderGroups().map(headerGroup => (
-                  <tr key={headerGroup.id}>
-                    {headerGroup.headers.map(header => (
-                      <th key={header.id} className="text-left px-5 py-4 text-xs font-bold text-muted-foreground tracking-wider select-none border-b border-card-border">
-                        {header.isPlaceholder
-                          ? null
-                          : flexRender(
-                            header.column.columnDef.header,
-                            header.getContext()
+                      {/* Team Members & Stats Section */}
+                      <div className="mt-4 pt-3 border-t border-border/20 flex items-center justify-between">
+                        {/* Assignee Avatars */}
+                        <div className="flex -space-x-2 overflow-hidden py-1">
+                          {project.assignees.slice(0, 4).map((assignee, idx) => (
+                            <div
+                              key={idx}
+                              title={assignee.name}
+                              className="inline-block h-6 w-6 rounded-full ring-2 ring-background flex items-center justify-center font-bold text-white text-[9px] shadow-sm select-none"
+                              style={{ backgroundColor: assignee.color }}
+                            >
+                              {assignee.name.charAt(0).toUpperCase()}
+                            </div>
+                          ))}
+                          {project.assignees.length > 4 && (
+                            <div className="inline-block h-6 w-6 rounded-full ring-2 ring-background bg-card/60 flex items-center justify-center font-bold text-[9px] text-muted-foreground select-none border border-card-border">
+                              +{project.assignees.length - 4}
+                            </div>
                           )}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody className="divide-y divide-border/30">
-                {table.getRowModel().rows.map(row => (
-                  <tr
-                    key={row.id}
-                    onClick={() => {
-                      setSelectedTask(row.original);
-                      setIsDetailOpen(true);
-                    }}
-                    className="hover:bg-accent/15 transition-colors cursor-pointer"
-                  >
-                    {row.getVisibleCells().map(cell => (
-                      <td key={cell.id} className="px-5 py-3.5 align-middle text-sm text-foreground">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                          {project.assignees.length === 0 && (
+                            <span className="text-[10px] text-muted-foreground">No assignees</span>
+                          )}
+                        </div>
 
-          {/* Pagination controls */}
-          <div className="flex items-center justify-between px-2 py-1 select-none">
-            <span className="text-xs text-muted-foreground font-medium">
-              Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()} ({filteredTasks.length} tasks matching)
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={() => table.previousPage()}
-                disabled={!table.getCanPreviousPage()}
-                className="p-1.5 border border-border rounded-lg bg-card/50 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => table.nextPage()}
-                disabled={!table.getCanNextPage()}
-                className="p-1.5 border border-border rounded-lg bg-card/50 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
-              >
-                <ArrowRight className="h-4 w-4" />
-              </button>
+                        {/* Stats Breakdown */}
+                        <div className="flex gap-3 text-right">
+                          {project.critical > 0 && (
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold uppercase text-red-500">Critical</span>
+                              <span className="text-xs font-extrabold text-red-500">{project.critical}</span>
+                            </div>
+                          )}
+                          <div className="flex flex-col">
+                            <span className="text-[10px] font-bold uppercase text-muted-foreground">Active</span>
+                            <span className="text-xs font-extrabold text-foreground">{project.total - project.completed}</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] font-bold uppercase text-emerald-500">Done</span>
+                            <span className="text-xs font-extrabold text-emerald-500">{project.completed}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+            </div>
+          ) : (
+            <div className="glass-panel p-12 rounded-2xl flex flex-col items-center justify-center text-center">
+              <Sparkles className="h-8 w-8 text-muted-foreground mb-4" />
+              <h3 className="font-extrabold text-lg">No projects match your search</h3>
+            </div>
+          )}
+        </>
+      ) : (
+        // --- DETAILED PROJECT TASK LIST ---
+        <>
+          {/* Breadcrumb Header */}
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={() => setSelectedProject(null)}
+              className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground hover:text-foreground transition-colors cursor-pointer w-fit group"
+            >
+              <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
+              <span>Back to Projects</span>
+            </button>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 no-print mt-1">
+              <div>
+                <h1 className="text-3xl font-extrabold tracking-tight">{selectedProject} Tasks</h1>
+                <p className="text-sm text-muted-foreground mt-1">Search, sort, filter, and audit tasks for project {selectedProject}.</p>
+              </div>
+
+              {/* Exporter Controls */}
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleExportExcel}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
+                >
+                  <Download className="h-3.5 w-3.5 text-primary" />
+                  <span>Export Excel</span>
+                </button>
+                <button
+                  onClick={() => handleExportCSV(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Export CSV</span>
+                </button>
+                <button
+                  onClick={() => handleExportCSV(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
+                >
+                  <Download className="h-3.5 w-3.5 text-emerald-500" />
+                  <span>Completed CSV</span>
+                </button>
+                <button
+                  onClick={handleExportPDF}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-card-border bg-background/50 hover:bg-accent/60 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer shadow-sm"
+                >
+                  <Printer className="h-3.5 w-3.5 text-indigo-500" />
+                  <span>Print Report (PDF)</span>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      ) : (
-        /* Empty State */
-        <div className="glass-panel p-12 rounded-2xl flex flex-col items-center justify-center text-center">
-          <Sparkles className="h-8 w-8 text-muted-foreground mb-4" />
-          <h3 className="font-extrabold text-lg">No tasks found</h3>
-          <p className="text-sm text-muted-foreground max-w-sm mt-1">
-            Try adjusting your search queries or filter choices.
-          </p>
-        </div>
+
+          {/* Query Filter and Toggle bar */}
+          <div className="flex flex-col gap-4 bg-card/45 border border-card-border p-4 rounded-2xl backdrop-blur-md">
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
+              {/* Global Search */}
+              <div className="relative w-full sm:max-w-xs">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-muted-foreground">
+                  <Search className="h-4 w-4" />
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search project directory..."
+                  value={globalFilter}
+                  onChange={(e) => setGlobalFilter(e.target.value)}
+                  className="w-full pl-9 pr-4 py-1.5 bg-background/50 border border-border rounded-xl outline-none text-sm focus:border-primary/50"
+                />
+              </div>
+
+              {/* Advanced toggle */}
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${showFilters || filterStatus !== 'all' || filterPriority !== 'all' || filterProject || filterTaskId || filterAssignee
+                      ? 'border-primary/40 bg-primary/5 text-primary'
+                      : 'border-border hover:bg-accent/40 text-muted-foreground hover:text-foreground'
+                    }`}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>Advanced Filters</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Collapsible advanced column trays */}
+            <AnimatePresence>
+              {showFilters && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden border-t border-border/40 pt-4 mt-2 space-y-4"
+                >
+                  {/* Input Fields Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                    {/* Task ID Search */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Task ID</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. TASK-000001"
+                        value={filterTaskId}
+                        onChange={(e) => setFilterTaskId(e.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
+                      />
+                    </div>
+
+                    {/* Project Search */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Project</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Acme Website"
+                        value={filterProject}
+                        onChange={(e) => setFilterProject(e.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
+                      />
+                    </div>
+
+                    {/* Assignee Search */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Assignee</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Sarah"
+                        value={filterAssignee}
+                        onChange={(e) => setFilterAssignee(e.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
+                      />
+                    </div>
+
+                    {/* Status Select */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Status</label>
+                      <select
+                        value={filterStatus}
+                        onChange={(e) => setFilterStatus(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none cursor-pointer focus:border-primary/40 text-foreground"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="assigned">Assigned</option>
+                        <option value="in-progress">In Progress</option>
+                        <option value="supplier-pending">Supplier Pending</option>
+                        <option value="development-completed">Dev Completed</option>
+                        <option value="code-review">Code Review</option>
+                        <option value="testing">Testing</option>
+                        <option value="uat">UAT</option>
+                        <option value="ready-for-deployment">Ready for Deploy</option>
+                        <option value="deployed">Deployed</option>
+                        <option value="moved-to-live">Moved to Live</option>
+                        <option value="completed">Completed</option>
+                        <option value="blocked">Blocked</option>
+                        <option value="on-hold">On Hold</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                    </div>
+
+                    {/* Priority Select */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Priority</label>
+                      <select
+                        value={filterPriority}
+                        onChange={(e) => setFilterPriority(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none cursor-pointer focus:border-primary/40 text-foreground"
+                      >
+                        <option value="all">All Priorities</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </div>
+
+                    {/* Module Search */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Module</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Auth"
+                        value={filterModule}
+                        onChange={(e) => setFilterModule(e.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
+                      />
+                    </div>
+
+                    {/* Created By Search */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Created By</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. admin@co.com"
+                        value={filterCreatedBy}
+                        onChange={(e) => setFilterCreatedBy(e.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
+                      />
+                    </div>
+
+                    {/* Due Date Match */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Due Date</label>
+                      <input
+                        type="date"
+                        value={filterDueDate}
+                        onChange={(e) => setFilterDueDate(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground cursor-pointer"
+                      />
+                    </div>
+
+                    {/* Created Start Date */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase text-muted-foreground">Created From</label>
+                      <input
+                        type="date"
+                        value={filterStartDate}
+                        onChange={(e) => setFilterStartDate(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground cursor-pointer"
+                      />
+                    </div>
+
+                    {/* Created End Date */}
+                    <div className="space-y-1 col-span-1">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-bold uppercase text-muted-foreground">Created To</label>
+                        {(filterTaskId || filterProject || filterAssignee || filterStatus !== 'all' || filterPriority !== 'all' || filterModule || filterCreatedBy || filterStartDate || filterEndDate || filterDueDate || filterOverdue || filterCompleted || filterTesting || filterDeployment || filterLive || filterCritical || filterBlocked) && (
+                          <button
+                            onClick={clearFilters}
+                            className="text-[9px] text-destructive font-bold hover:underline cursor-pointer flex items-center gap-0.5"
+                          >
+                            <X className="h-2 w-2" /> Clear
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="date"
+                        value={filterEndDate}
+                        onChange={(e) => setFilterEndDate(e.target.value)}
+                        className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Status and Toggle Tags Grid */}
+                  <div className="border-t border-border/20 pt-3 flex flex-wrap gap-2 items-center">
+                    <span className="text-[9px] font-bold uppercase text-muted-foreground tracking-wider mr-2">Toggle Overrides:</span>
+                    
+                    {/* Overdue */}
+                    <button
+                      onClick={() => setFilterOverdue(!filterOverdue)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterOverdue
+                        ? 'bg-red-500/10 border-red-500/40 text-red-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterOverdue && <Check className="h-3 w-3" />}
+                      <span>Overdue</span>
+                    </button>
+
+                    {/* Completed */}
+                    <button
+                      onClick={() => setFilterCompleted(!filterCompleted)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterCompleted
+                        ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterCompleted && <Check className="h-3 w-3" />}
+                      <span>Completed</span>
+                    </button>
+
+                    {/* Testing */}
+                    <button
+                      onClick={() => setFilterTesting(!filterTesting)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterTesting
+                        ? 'bg-purple-500/10 border-purple-500/40 text-purple-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterTesting && <Check className="h-3 w-3" />}
+                      <span>Testing</span>
+                    </button>
+
+                    {/* Deployment */}
+                    <button
+                      onClick={() => setFilterDeployment(!filterDeployment)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterDeployment
+                        ? 'bg-indigo-500/10 border-indigo-500/40 text-indigo-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterDeployment && <Check className="h-3 w-3" />}
+                      <span>Deployment</span>
+                    </button>
+
+                    {/* Live */}
+                    <button
+                      onClick={() => setFilterLive(!filterLive)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterLive
+                        ? 'bg-sky-500/10 border-sky-500/40 text-sky-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterLive && <Check className="h-3 w-3" />}
+                      <span>Live</span>
+                    </button>
+
+                    {/* Critical */}
+                    <button
+                      onClick={() => setFilterCritical(!filterCritical)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterCritical
+                        ? 'bg-orange-500/10 border-orange-500/40 text-orange-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterCritical && <Check className="h-3 w-3" />}
+                      <span>Critical</span>
+                    </button>
+
+                    {/* Blocked */}
+                    <button
+                      onClick={() => setFilterBlocked(!filterBlocked)}
+                      className={`flex items-center gap-1 px-3 py-1.5 border rounded-full text-xs font-semibold cursor-pointer transition-all ${filterBlocked
+                        ? 'bg-pink-500/10 border-pink-500/40 text-pink-500 shadow-sm'
+                        : 'bg-background/20 border-border text-muted-foreground hover:text-foreground hover:bg-accent/40'}`}
+                    >
+                      {filterBlocked && <Check className="h-3 w-3" />}
+                      <span>Blocked</span>
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Main Table view */}
+          {loading ? (
+            <div className="flex h-64 items-center justify-center">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : filteredTasks.length > 0 ? (
+            <div className="space-y-4">
+              {/* Sticky Header Glass Table Container */}
+              <div className="glass-panel rounded-2xl overflow-hidden overflow-x-auto max-h-[60vh]">
+                <table className="w-full border-collapse">
+                  <thead className="sticky top-0 z-10 bg-card/90 backdrop-blur-md shadow-sm border-b border-card-border">
+                    {table.getHeaderGroups().map(headerGroup => (
+                      <tr key={headerGroup.id}>
+                        {headerGroup.headers.map(header => (
+                          <th key={header.id} className="text-left px-5 py-4 text-xs font-bold text-muted-foreground tracking-wider select-none border-b border-card-border">
+                            {header.isPlaceholder
+                              ? null
+                              : flexRender(
+                                header.column.columnDef.header,
+                                header.getContext()
+                              )}
+                          </th>
+                        ))}
+                      </tr>
+                    ))}
+                  </thead>
+                  <tbody className="divide-y divide-border/30">
+                    {table.getRowModel().rows.map(row => (
+                      <tr
+                        key={row.id}
+                        onClick={() => {
+                          setSelectedTask(row.original);
+                          setIsDetailOpen(true);
+                        }}
+                        className="hover:bg-accent/15 transition-colors cursor-pointer"
+                      >
+                        {row.getVisibleCells().map(cell => (
+                          <td key={cell.id} className="px-5 py-3.5 align-middle text-sm text-foreground">
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination controls */}
+              <div className="flex items-center justify-between px-2 py-1 select-none">
+                <span className="text-xs text-muted-foreground font-medium">
+                  Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()} ({filteredTasks.length} tasks matching)
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => table.previousPage()}
+                    disabled={!table.getCanPreviousPage()}
+                    className="p-1.5 border border-border rounded-lg bg-card/50 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => table.nextPage()}
+                    disabled={!table.getCanNextPage()}
+                    className="p-1.5 border border-border rounded-lg bg-card/50 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                  >
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Empty State */
+            <div className="glass-panel p-12 rounded-2xl flex flex-col items-center justify-center text-center">
+              <Sparkles className="h-8 w-8 text-muted-foreground mb-4" />
+              <h3 className="font-extrabold text-lg">No tasks found</h3>
+              <p className="text-sm text-muted-foreground max-w-sm mt-1">
+                Try adjusting your search queries or filter choices.
+              </p>
+            </div>
+          )}
+        </>
       )}
 
       {/* Task Details Side Drawer */}
