@@ -1,23 +1,23 @@
-'use client';
-
 import React, { useEffect, useState, useMemo } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, Loader2, Check, Copy } from 'lucide-react';
+import DatePicker from '@/components/ui/DatePicker';
+import MultiAssigneeSelect from '@/components/ui/MultiAssigneeSelect';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
-import { Task, TaskPriority, TaskStatus, Member, Project, Attachment } from '@/types';
+import { Task, TaskPriority, TaskStatus, Member, Project, Attachment, TaskAssignee } from '@/types';
 import toast from 'react-hot-toast';
 import { TASK_PRIORITIES } from '@/constants';
-import { formatDate } from '@/utils';
+import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
 
 const taskFormSchema = z.object({
   projectName: z.string().min(1, 'Project Name is required'),
   title: z.string().min(1, 'Task Title is required'),
   description: z.string(),
-  assigneeEmail: z.string().min(1, 'Assigned To is required').email('Invalid email address'),
+  assigneeEmails: z.array(z.string().email('Invalid email')).min(1, 'At least one assignee is required'),
   priority: z.enum(['critical', 'high', 'medium', 'low']),
   module: z.string().min(1, 'Module is required'),
   startDate: z.string().optional().or(z.literal('')),
@@ -29,7 +29,7 @@ const taskFormSchema = z.object({
     selected.setHours(0,0,0,0);
     return selected.getTime() >= today.getTime();
   }, { message: "Completion date cannot be in the past." }),
-  remarks: z.string(),
+  remarks: z.string().optional().default(''),
 });
 
 type TaskFormValues = z.infer<typeof taskFormSchema>;
@@ -64,6 +64,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
     reset,
     watch,
     setValue,
+    control,
     formState: { errors },
   } = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema) as any,
@@ -71,7 +72,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       projectName: '',
       title: '',
       description: '',
-      assigneeEmail: '',
+      assigneeEmails: [],
       priority: 'medium',
       module: '',
       startDate: '',
@@ -183,7 +184,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         projectName: taskToEdit.projectName,
         title: taskToEdit.title,
         description: taskToEdit.description || '',
-        assigneeEmail: taskToEdit.assigneeId,
+        assigneeEmails: getTaskAssigneeIds(taskToEdit),
         priority: taskToEdit.priority,
         module: taskToEdit.module,
         startDate: formattedStartDate,
@@ -196,7 +197,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         projectName: '',
         title: '',
         description: '',
-        assigneeEmail: '',
+        assigneeEmails: [],
         priority: 'medium',
         module: '',
         startDate: '',
@@ -209,10 +210,17 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   const onSubmit = async (values: TaskFormValues) => {
     setSaving(true);
     try {
-      // Resolve assignee name & color
-      const matchedMember = members.find(m => m.email.toLowerCase() === values.assigneeEmail.toLowerCase());
-      const assigneeName = matchedMember ? matchedMember.name : values.assigneeEmail.split('@')[0];
-      const assigneeColor = matchedMember ? matchedMember.avatarColor : '#6366f1';
+      // Resolve all assignees objects
+      const assignees: TaskAssignee[] = values.assigneeEmails.map(email => {
+        const matched = members.find(m => m.email.toLowerCase() === email.toLowerCase());
+        return {
+          id: email.toLowerCase(),
+          name: matched ? matched.name : email.split('@')[0],
+          color: matched?.avatarColor || '#6366f1'
+        };
+      });
+      const assigneeIds = assignees.map(a => a.id);
+      const primaryAssignee = assignees[0] || { id: '', name: 'Unassigned', color: '#6366f1' };
 
       if (isEditMode && taskToEdit) {
         // Record timeline history if status changed
@@ -234,9 +242,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           projectName: values.projectName,
           title: values.title,
           description: values.description,
-          assigneeId: values.assigneeEmail,
-          assigneeName,
-          assigneeColor,
+          assignees,
+          assigneeIds,
+          // Legacy backward-compatibility fields
+          assigneeId: primaryAssignee.id,
+          assigneeName: primaryAssignee.name,
+          assigneeColor: primaryAssignee.color,
           priority: values.priority,
           status: 'assigned' as TaskStatus,
           module: values.module,
@@ -267,9 +278,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           projectName: values.projectName,
           title: values.title,
           description: values.description,
-          assigneeId: values.assigneeEmail,
-          assigneeName,
-          assigneeColor,
+          assignees,
+          assigneeIds,
+          // Legacy backward-compatibility fields
+          assigneeId: primaryAssignee.id,
+          assigneeName: primaryAssignee.name,
+          assigneeColor: primaryAssignee.color,
           priority: values.priority,
           status: 'assigned' as TaskStatus,
           module: values.module,
@@ -355,9 +369,10 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div key="create-task-dialog-wrapper" className="fixed inset-0 z-50 flex items-center justify-center p-4">
           {/* Backdrop */}
           <motion.div
+            key="create-task-dialog-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.5 }}
             exit={{ opacity: 0 }}
@@ -367,6 +382,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
 
           {/* Modal Container */}
           <motion.div
+            key="create-task-dialog-container"
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -415,7 +431,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                   </div>
                   <div>
                     <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">Assigned To</span>
-                    <span className="font-semibold text-foreground">{createdTask.assigneeName}</span>
+                    <span className="font-semibold text-foreground">{getTaskAssigneeNames(createdTask)}</span>
                   </div>
                 </div>
 
@@ -424,7 +440,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                   <button
                     type="button"
                     onClick={() => {
-                      const shareText = `Ticket: ${createdTask.taskId}\nProject: ${createdTask.projectName}\nTitle: ${createdTask.title}\nAssigned To: ${createdTask.assigneeName}\nDue Date: ${formatDate(createdTask.expectedCompletionDate)}\nLink: ${window.location.origin}/dashboard`;
+                      const shareText = `Ticket: ${createdTask.taskId}\nProject: ${createdTask.projectName}\nTitle: ${createdTask.title}\nAssigned To: ${getTaskAssigneeNames(createdTask)}\nDue Date: ${formatDate(createdTask.expectedCompletionDate)}\nLink: ${window.location.origin}/dashboard`;
                       navigator.clipboard.writeText(shareText);
                       toast.success('Share details copied to clipboard!');
                     }}
@@ -554,18 +570,21 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assigned To *</label>
-                  <select
-                    disabled={loadingMembers || isMemberAndEditing}
-                    className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary ${errors.assigneeEmail ? 'border-destructive' : 'border-border'
-                      }`}
-                    {...register('assigneeEmail')}
-                  >
-                    <option value="">Select a team member</option>
-                    {members.map(m => (
-                      <option key={m.id} value={m.email}>{m.name} ({m.email})</option>
-                    ))}
-                  </select>
-                  {errors.assigneeEmail && <p className="text-[9px] text-destructive font-semibold">{errors.assigneeEmail.message}</p>}
+                  <Controller
+                    control={control}
+                    name="assigneeEmails"
+                    render={({ field }) => (
+                      <MultiAssigneeSelect
+                        members={members}
+                        selectedEmails={field.value || []}
+                        onChange={field.onChange}
+                        hasError={!!errors.assigneeEmails}
+                        disabled={loadingMembers || isMemberAndEditing}
+                        placeholder="Select team members..."
+                      />
+                    )}
+                  />
+                  {errors.assigneeEmails && <p className="text-[9px] text-destructive font-semibold">{errors.assigneeEmails.message}</p>}
                 </div>
 
                 <div className="space-y-1">
@@ -586,22 +605,38 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Start Date</label>
-                  <input
-                    type="date"
-                    className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 ${errors.startDate ? 'border-destructive' : 'border-border focus:border-primary'
-                      }`}
-                    {...register('startDate')}
+                  <Controller
+                    control={control}
+                    name="startDate"
+                    render={({ field }) => (
+                      <DatePicker
+                        value={field.value}
+                        onChange={field.onChange}
+                        hasError={!!errors.startDate}
+                        placeholder="mm/dd/yyyy"
+                        align="left"
+                        disabled={saving || isMemberAndEditing}
+                      />
+                    )}
                   />
                   {errors.startDate && <p className="text-[9px] text-destructive font-semibold">{errors.startDate.message}</p>}
                 </div>
 
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expected Completion Date</label>
-                  <input
-                    type="date"
-                    className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 ${errors.expectedCompletionDate ? 'border-destructive' : 'border-border focus:border-primary'
-                      }`}
-                    {...register('expectedCompletionDate')}
+                  <Controller
+                    control={control}
+                    name="expectedCompletionDate"
+                    render={({ field }) => (
+                      <DatePicker
+                        value={field.value}
+                        onChange={field.onChange}
+                        hasError={!!errors.expectedCompletionDate}
+                        placeholder="mm/dd/yyyy"
+                        align="right"
+                        disabled={saving || isMemberAndEditing}
+                      />
+                    )}
                   />
                   {errors.expectedCompletionDate && <p className="text-[9px] text-destructive font-semibold">{errors.expectedCompletionDate.message}</p>}
                 </div>
@@ -609,11 +644,14 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
 
               {/* Estimated Effort Display */}
               {!errors.expectedCompletionDate && !errors.startDate && (
-                <div className="p-2.5 bg-primary/5 border border-primary/20 rounded-lg">
-                  <p className="text-[10px] text-primary font-bold">
-                    Estimated Effort: <span className="text-primary font-bold text-xs">{calculatedHours} Hours</span>
-                  </p>
-                  <p className="text-[9px] text-muted-foreground">(Calculated Automatically)</p>
+                <div className="flex items-center justify-between px-3 py-2 bg-primary/5 border border-primary/15 rounded-lg">
+                  <div>
+                    <span className="text-[11px] font-semibold text-foreground/90 block">Estimated Effort</span>
+                    <span className="text-[10px] text-muted-foreground">Calculated automatically</span>
+                  </div>
+                  <span className="text-xs font-bold text-primary font-mono bg-primary/10 px-2.5 py-1 rounded-md border border-primary/20">
+                    {calculatedHours} Hours
+                  </span>
                 </div>
               )}
 
@@ -621,9 +659,9 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</label>
                 <textarea
-                  rows={4}
+                  rows={3}
                   disabled={isMemberAndEditing}
-                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[80px] disabled:opacity-75 disabled:cursor-not-allowed"
+                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[70px] disabled:opacity-75 disabled:cursor-not-allowed"
                   placeholder="Explain details, expectations, or requirements..."
                   {...register('description')}
                 />
@@ -631,13 +669,18 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
 
               {/* Attachments Section (Only for task creation/email) */}
               {!isEditMode && (
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                      Attachments for Email (Logs, Text Files, PDFs, Images)
-                    </label>
-                    <label className="text-[10px] text-primary hover:underline font-bold cursor-pointer focus:outline-none">
-                      + Add File(s)
+                <div className="space-y-1.5 pt-0.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
+                        Attachments
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        Optional · Logs, text files, PDFs, images
+                      </span>
+                    </div>
+                    <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-accent/60 hover:bg-accent text-[11px] font-semibold text-primary border border-border/80 transition-colors cursor-pointer select-none">
+                      <span>+ Add File(s)</span>
                       <input
                         type="file"
                         multiple
@@ -649,18 +692,18 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                   </div>
 
                   {selectedFiles.length > 0 && (
-                    <div className="space-y-1.5 max-h-[120px] overflow-y-auto bg-slate-950/40 p-2.5 rounded-lg border border-border">
+                    <div className="space-y-1 max-h-[100px] overflow-y-auto bg-slate-950/40 p-2 rounded-lg border border-border mt-1">
                       {selectedFiles.map((file, idx) => {
                         const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
                         return (
-                          <div key={idx} className="flex items-center justify-between p-1.5 rounded-md bg-background/50 border border-border/60 text-xs">
-                            <span className="truncate flex-1 font-medium pr-3 text-foreground" title={file.name}>
+                          <div key={idx} className="flex items-center justify-between px-2 py-1 rounded-md bg-background/60 border border-border/50 text-xs">
+                            <span className="truncate flex-1 text-[11px] font-medium pr-2 text-foreground" title={file.name}>
                               📎 {file.name} <span className="text-[10px] text-muted-foreground">({sizeMB} MB)</span>
                             </span>
                             <button
                               type="button"
                               onClick={() => removeSelectedFile(idx)}
-                              className="text-destructive hover:text-destructive/80 transition-colors font-bold cursor-pointer"
+                              className="text-destructive hover:text-destructive/80 transition-colors cursor-pointer p-0.5"
                             >
                               <X className="h-3.5 w-3.5" />
                             </button>
@@ -671,17 +714,6 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                   )}
                 </div>
               )}
-
-              {/* Row 6: Remarks (Optional) */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Remarks</label>
-                <textarea
-                  rows={2}
-                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[50px]"
-                  placeholder="Any immediate update notes or blockers..."
-                  {...register('remarks')}
-                />
-              </div>
 
               {/* Submit panel */}
               <div className="flex gap-2.5 justify-end pt-2.5 border-t border-card-border mt-3">

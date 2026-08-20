@@ -240,7 +240,7 @@ Login Link: ${window.location.origin}/login`;
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
           {members.map((member, idx) => (
             <motion.div
-              key={member.id}
+              key={member.id || member.email || `member-${idx}`}
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: idx * 0.05, duration: 0.3 }}

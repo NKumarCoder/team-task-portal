@@ -33,7 +33,7 @@ import {
   Award
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { formatDate } from '@/utils';
+import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { isFirebaseConfigured } from '@/firebase/config';
@@ -150,7 +150,7 @@ export default function DashboardHome() {
         const matchId = task.taskId?.toLowerCase().includes(q);
         const matchTitle = task.title?.toLowerCase().includes(q);
         const matchProject = task.projectName?.toLowerCase().includes(q);
-        const matchAssignee = task.assigneeName?.toLowerCase().includes(q);
+        const matchAssignee = getTaskAssignees(task).some(a => a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
         if (!matchId && !matchTitle && !matchProject && !matchAssignee) {
           return false;
         }
@@ -160,7 +160,7 @@ export default function DashboardHome() {
       if (filterProject !== 'all' && task.projectName.toLowerCase() !== filterProject.toLowerCase()) {
         return false;
       }
-      if (filterEmployee !== 'all' && task.assigneeId.toLowerCase() !== filterEmployee.toLowerCase()) {
+      if (filterEmployee !== 'all' && !getTaskAssigneeIds(task).includes(filterEmployee.toLowerCase())) {
         return false;
       }
       if (filterPriority !== 'all' && task.priority.toLowerCase() !== filterPriority.toLowerCase()) {
@@ -190,17 +190,17 @@ export default function DashboardHome() {
   // 1. Metric Counts derived from filtered tasks
   const metrics = useMemo(() => {
     const total = filteredTasks.length;
-    const completed = filteredTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live').length;
+    const completed = filteredTasks.filter(t => t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live').length;
     const pending = filteredTasks.filter(t => t.status === 'assigned' || t.status === 'on-hold').length;
-    const testing = filteredTasks.filter(t => t.status === 'testing' || t.status === 'uat').length;
-    const inProgress = filteredTasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'development-completed' || t.status === 'code-review').length;
-    const blocked = filteredTasks.filter(t => t.status === 'blocked').length;
+    const testing = filteredTasks.filter(t => t.status === 'uat-testing' || t.status === 'uat-deployed' || t.status === 'testing' || t.status === 'uat').length;
+    const inProgress = filteredTasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'code-review' || t.status === 'ready-for-production-deploy' || t.status === 'development-completed').length;
+    const blocked = filteredTasks.filter(t => t.status === 'blocked' || t.status === 'uat-rejected').length;
     const critical = filteredTasks.filter(t => t.priority === 'critical').length;
 
     const today = new Date();
     today.setHours(0,0,0,0);
     const overdue = filteredTasks.filter(t => {
-      if (t.status === 'completed' || t.status === 'moved-to-live' || t.status === 'cancelled') return false;
+      if (t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live' || t.status === 'cancelled') return false;
       const d = new Date(t.expectedCompletionDate);
       d.setHours(0,0,0,0);
       return d.getTime() < today.getTime();
@@ -215,7 +215,7 @@ export default function DashboardHome() {
     { label: 'Pending', count: metrics.pending, icon: HelpCircle, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/15' },
     { label: 'Testing', count: metrics.testing, icon: Clock, color: 'text-violet-500', bg: 'bg-violet-500/10 border-violet-500/15' },
     { label: 'In Progress', count: metrics.inProgress, icon: Play, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/15' },
-    { label: 'Blocked', count: metrics.blocked, icon: Lock, color: 'text-rose-500', bg: 'bg-rose-500/10 border-rose-500/15' },
+    { label: 'Blocked / Rejected', count: metrics.blocked, icon: Lock, color: 'text-rose-500', bg: 'bg-rose-500/10 border-rose-500/15' },
     { label: 'Critical', count: metrics.critical, icon: ShieldAlert, color: 'text-red-500', bg: 'bg-red-500/10 border-red-500/15' },
     { label: 'Overdue', count: metrics.overdue, icon: AlertTriangle, color: 'text-orange-500', bg: 'bg-orange-500/10 border-orange-500/15' },
   ];
@@ -233,15 +233,15 @@ export default function DashboardHome() {
       const p = projectsMap[t.projectName];
       p.total += 1;
 
-      if (t.status === 'completed') p.completed += 1;
+      if (t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live') p.completed += 1;
       else if (t.status === 'assigned' || t.status === 'on-hold') p.pending += 1;
-      else if (t.status === 'testing' || t.status === 'uat') p.testing += 1;
-      else if (t.status === 'ready-for-deployment' || t.status === 'development-completed' || t.status === 'code-review') p.deployment += 1;
-      else if (t.status === 'moved-to-live' || t.status === 'deployed') p.live += 1;
+      else if (t.status === 'uat-testing' || t.status === 'uat-deployed' || t.status === 'testing' || t.status === 'uat') p.testing += 1;
+      else if (t.status === 'ready-for-production-deploy' || t.status === 'ready-for-deployment' || t.status === 'development-completed' || t.status === 'code-review') p.deployment += 1;
+      else if (t.status === 'uat-rejected' || t.status === 'blocked') p.pending += 1;
     });
 
     return Object.entries(projectsMap).map(([name, data]) => {
-      const actualCompleted = data.completed + data.live;
+      const actualCompleted = data.completed;
       const progress = data.total > 0 ? Math.round((actualCompleted / data.total) * 100) : 0;
       return { name, ...data, progress };
     }).sort((a, b) => b.progress - a.progress); // Sort by highest progress percentage first
@@ -345,8 +345,8 @@ export default function DashboardHome() {
   // 7. Employee Capacity & Workloads List
   const teamActivityList = useMemo(() => {
     return members.map(member => {
-      // Find tasks assigned to this member
-      const memberAllTasks = tasks.filter(t => t.assigneeId.toLowerCase() === member.email.toLowerCase());
+      // Find tasks assigned to this member (supports multi-assignees)
+      const memberAllTasks = tasks.filter(t => isUserAssignedToTask(t, member.email));
       const active = memberAllTasks.filter(t => t.status !== 'completed' && t.status !== 'moved-to-live' && t.status !== 'cancelled');
       const completed = memberAllTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live');
 
@@ -567,7 +567,7 @@ export default function DashboardHome() {
                 `"${t.title.replace(/"/g, '""')}"`,
                 t.priority.toUpperCase(),
                 t.status.toUpperCase(),
-                t.assigneeName,
+                `"${getTaskAssigneeNames(t).replace(/"/g, '""')}"`,
                 formatDate(t.expectedCompletionDate)
               ]);
               const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
@@ -639,8 +639,8 @@ export default function DashboardHome() {
               className="w-full bg-background/60 border border-card-border rounded-lg py-1.5 px-2.5 text-xs font-medium focus:outline-none text-foreground cursor-pointer"
             >
               <option value="all">All Projects</option>
-              {projectList.map(proj => (
-                <option key={proj} value={proj}>{proj}</option>
+              {projectList.filter(Boolean).map((proj, idx) => (
+                <option key={proj || `proj-${idx}`} value={proj}>{proj}</option>
               ))}
             </select>
           </div>
@@ -654,8 +654,8 @@ export default function DashboardHome() {
               className="w-full bg-background/60 border border-card-border rounded-lg py-1.5 px-2.5 text-xs font-medium focus:outline-none text-foreground cursor-pointer"
             >
               <option value="all">All Employees</option>
-              {members.map(m => (
-                <option key={m.id} value={m.email}>{m.name}</option>
+              {members.filter(m => Boolean(m.id || m.email)).map((m, idx) => (
+                <option key={m.id || m.email || `m-${idx}`} value={m.email}>{m.name}</option>
               ))}
             </select>
           </div>
@@ -688,11 +688,13 @@ export default function DashboardHome() {
               <option value="assigned">Assigned</option>
               <option value="in-progress">In Progress</option>
               <option value="supplier-pending">Supplier Pending</option>
-              <option value="testing">Testing</option>
-              <option value="ready-for-deployment">Ready for Deployment</option>
+              <option value="code-review">Code Review</option>
+              <option value="uat-deployed">UAT Deployed</option>
+              <option value="uat-testing">UAT Testing</option>
+              <option value="uat-rejected">UAT Rejected</option>
+              <option value="ready-for-production-deploy">Ready for Production Deploy</option>
+              <option value="prod-deployed">Prod Deployed</option>
               <option value="completed">Completed</option>
-              <option value="blocked">Blocked</option>
-              <option value="moved-to-live">Moved to Live</option>
             </select>
           </div>
 
@@ -1048,7 +1050,7 @@ export default function DashboardHome() {
                         <span className="font-bold font-mono text-[9px] text-muted-foreground mr-1.5">{t.taskId}</span>
                         <span className="font-extrabold text-foreground truncate">{t.title}</span>
                       </div>
-                      <span className="text-[9px] text-emerald-500 font-bold shrink-0">{t.assigneeName.split(' ')[0]}</span>
+                      <span className="text-[9px] text-emerald-500 font-bold shrink-0">{getTaskAssignees(t)[0]?.name.split(' ')[0] || 'Unassigned'}</span>
                     </div>
                   ))
                 ) : (
@@ -1075,7 +1077,7 @@ export default function DashboardHome() {
                         <span className="font-bold font-mono text-[9px] text-red-500 mr-1.5">{t.taskId}</span>
                         <span className="font-extrabold text-foreground truncate">{t.title}</span>
                       </div>
-                      <span className="text-[9px] text-red-500 font-bold shrink-0">{t.assigneeName.split(' ')[0]}</span>
+                      <span className="text-[9px] text-red-500 font-bold shrink-0">{getTaskAssignees(t)[0]?.name.split(' ')[0] || 'Unassigned'}</span>
                     </div>
                   ))
                 ) : (
@@ -1115,7 +1117,7 @@ export default function DashboardHome() {
                     </div>
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between text-[9px] font-bold text-muted-foreground">
-                      <span>{t.assigneeName}</span>
+                      <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
                       <span>Hours Left: <strong className="text-foreground">{t.estimatedHours || 0}h</strong></span>
                     </div>
                   </div>
@@ -1151,7 +1153,7 @@ export default function DashboardHome() {
                     </div>
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between items-center text-[9px] font-bold text-muted-foreground pt-1.5 border-t border-red-500/5">
-                      <span>{t.assigneeName}</span>
+                      <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
                       <PriorityBadge priority={t.priority} className="text-[8px]" />
                     </div>
                   </div>
@@ -1184,7 +1186,7 @@ export default function DashboardHome() {
                     </div>
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between items-center text-[9px] font-bold text-muted-foreground">
-                      <span>{t.assigneeName}</span>
+                      <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
                       <span>Due: {formatDate(t.expectedCompletionDate)}</span>
                     </div>
                   </div>
@@ -1212,9 +1214,9 @@ export default function DashboardHome() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {teamActivityList.map((act) => (
+          {teamActivityList.map((act, idx) => (
             <motion.div
-              key={act.member.id}
+              key={act.member.id || act.member.email || `act-${idx}`}
               onClick={() => {
                 setSelectedMember(act.member);
                 setIsMemberDrawerOpen(true);

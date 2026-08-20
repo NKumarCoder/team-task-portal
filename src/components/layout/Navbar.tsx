@@ -221,9 +221,9 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
                     {/* Scrollable list */}
                     <div className="flex-1 overflow-y-auto pr-1 space-y-3.5">
                       {notifications.length > 0 ? (
-                        notifications.map((notif) => (
+                        notifications.map((notif, nIdx) => (
                           <div 
-                            key={notif.id}
+                            key={notif.id || notif.notificationId || `notif-${nIdx}`}
                             className={cn(
                               "p-3 rounded-xl border flex flex-col gap-2 relative transition-all duration-200 hover:bg-accent/10 border-card-border",
                               !notif.read ? "bg-primary/[0.03] border-primary/20" : "bg-card/40 opacity-75"
@@ -299,9 +299,10 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
 
             <AnimatePresence>
               {showProfileMenu && (
-                <>
+                <div key="navbar-profile-menu-container">
                   <div className="fixed inset-0 z-40" onClick={() => setShowProfileMenu(false)} />
                   <motion.div
+                    key="navbar-profile-menu-panel"
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -340,7 +341,7 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
                       </button>
                     </div>
                   </motion.div>
-                </>
+                </div>
               )}
             </AnimatePresence>
           </div>

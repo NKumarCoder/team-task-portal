@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
+import { isUserAssignedToTask } from '@/utils';
 
 type ActiveTab = 'all' | 'today' | 'overdue' | 'completed';
 
@@ -39,7 +40,7 @@ export default function MyTasksPage() {
       try {
         const allTasks = await dbService.getTasks();
         const myTasks = allTasks.filter(t => 
-          t.assigneeId.toLowerCase() === user.email.toLowerCase() ||
+          isUserAssignedToTask(t, user.email) ||
           (t.status === 'uat' && t.createdBy.toLowerCase() === user.email.toLowerCase())
         );
         console.log("[My Tasks] Workspace tasks fetched count:", myTasks.length);
@@ -111,10 +112,10 @@ export default function MyTasksPage() {
           const d = new Date(task.expectedCompletionDate);
           if (isNaN(d.getTime())) return false;
           const taskDate = d.toISOString().split('T')[0];
-          return taskDate === todayStr && task.status !== 'completed' && task.status !== 'moved-to-live';
+          return taskDate === todayStr && task.status !== 'completed' && task.status !== 'prod-deployed' && task.status !== 'moved-to-live';
         }
         case 'overdue': {
-          if (task.status === 'completed' || task.status === 'moved-to-live' || task.status === 'cancelled') return false;
+          if (task.status === 'completed' || task.status === 'prod-deployed' || task.status === 'moved-to-live' || task.status === 'cancelled') return false;
           if (!task.expectedCompletionDate) return false;
           const taskDueDate = new Date(task.expectedCompletionDate);
           if (isNaN(taskDueDate.getTime())) return false;
@@ -122,7 +123,7 @@ export default function MyTasksPage() {
           return taskDueDate.getTime() < todayDate.getTime();
         }
         case 'completed':
-          return task.status === 'completed' || task.status === 'moved-to-live';
+          return task.status === 'completed' || task.status === 'prod-deployed' || task.status === 'moved-to-live';
         case 'all':
         default:
           return true;
@@ -224,9 +225,9 @@ export default function MyTasksPage() {
 
                 {/* Priority specific Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {list.map((task) => (
+                  {list.map((task, tIdx) => (
                     <TaskCard
-                      key={task.id}
+                      key={task.id || task.taskId || `task-${tIdx}`}
                       task={task}
                       onClick={() => {
                         setSelectedTask(task);

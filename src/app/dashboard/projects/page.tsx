@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { formatDate } from '@/utils';
+import { formatDate, getTaskAssignees, getTaskAssigneeNames } from '@/utils';
 
 export default function ProjectsPage() {
   const { user, hasPermission } = useAuth();
@@ -89,9 +89,9 @@ export default function ProjectsPage() {
   const getProjectStats = (projectName: string) => {
     const projectTasks = tasks.filter(t => t.projectName.toLowerCase() === projectName.toLowerCase());
     const total = projectTasks.length;
-    const completed = projectTasks.filter(t => ['completed', 'deployed', 'moved-to-live'].includes(t.status)).length;
-    const inProgress = projectTasks.filter(t => ['in-progress', 'supplier-pending', 'development-completed', 'code-review', 'testing', 'uat'].includes(t.status)).length;
-    const blocked = projectTasks.filter(t => t.status === 'blocked').length;
+    const completed = projectTasks.filter(t => ['completed', 'prod-deployed', 'deployed', 'moved-to-live'].includes(t.status)).length;
+    const inProgress = projectTasks.filter(t => ['in-progress', 'supplier-pending', 'code-review', 'uat-deployed', 'uat-testing', 'ready-for-production-deploy', 'development-completed', 'testing', 'uat'].includes(t.status)).length;
+    const blocked = projectTasks.filter(t => ['blocked', 'uat-rejected'].includes(t.status)).length;
     const pending = total - completed - inProgress - blocked;
     
     const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
@@ -99,9 +99,11 @@ export default function ProjectsPage() {
     // Unique Assignees
     const assigneesMap = new Map<string, { name: string; color: string }>();
     projectTasks.forEach(t => {
-      if (t.assigneeId) {
-        assigneesMap.set(t.assigneeId.toLowerCase(), { name: t.assigneeName, color: t.assigneeColor });
-      }
+      getTaskAssignees(t).forEach(a => {
+        if (a.id && a.name) {
+          assigneesMap.set(a.id.toLowerCase(), { name: a.name, color: a.color });
+        }
+      });
     });
     const assignees = Array.from(assigneesMap.values());
     
@@ -301,14 +303,21 @@ export default function ProjectsPage() {
                                   <td className="py-3 font-semibold text-foreground">{task.title}</td>
                                   <td className="py-3 text-muted-foreground">{task.module}</td>
                                   <td className="py-3">
-                                    <div className="flex items-center gap-1.5">
-                                      <div 
-                                        className="w-5 h-5 rounded-full flex items-center justify-center font-extrabold text-white text-[8px]"
-                                        style={{ backgroundColor: task.assigneeColor }}
-                                      >
-                                        {task.assigneeName.charAt(0).toUpperCase()}
+                                    <div className="flex items-center gap-1.5" title={getTaskAssigneeNames(task)}>
+                                      <div className="flex items-center shrink-0">
+                                        {getTaskAssignees(task).slice(0, 3).map((a, idx) => (
+                                          <div 
+                                            key={a.id || `assignee-${idx}`}
+                                            className={`w-5 h-5 rounded-full flex items-center justify-center font-extrabold text-white text-[8px] border border-card shrink-0 ${
+                                              idx > 0 ? '-ml-2' : ''
+                                            }`}
+                                            style={{ backgroundColor: a.color || '#6366f1' }}
+                                          >
+                                            {a.name.charAt(0).toUpperCase()}
+                                          </div>
+                                        ))}
                                       </div>
-                                      <span className="font-medium text-gray-300 truncate max-w-[90px]">{task.assigneeName}</span>
+                                      <span className="font-medium text-gray-300 truncate max-w-[90px]">{getTaskAssigneeNames(task)}</span>
                                     </div>
                                   </td>
                                   <td className="py-3 text-center">

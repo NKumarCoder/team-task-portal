@@ -12,7 +12,7 @@ import {
   Loader2, 
   AlertTriangle 
 } from 'lucide-react';
-import { formatDate } from '@/utils';
+import { formatDate, isUserAssignedToTask } from '@/utils';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
 
@@ -30,10 +30,12 @@ export default function CalendarPage() {
   // Calendar Date Navigation
   const [currentDate, setCurrentDate] = useState(new Date());
   
-  // Dialog drawer controllers
+  // Drawer & Edit Modal States
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [taskToEdit, setTaskToEdit] = useState<Task | undefined>(undefined);
+  const [isEditOpen, setIsEditOpen] = useState(false);
 
   const isEmployee = user?.role === 'Member';
 
@@ -47,10 +49,10 @@ export default function CalendarPage() {
     return () => unsubscribe();
   }, []);
 
-  // Filter tasks based on RBAC rule (Employee can only see their own tasks)
+  // Filter tasks based on RBAC rule (Employee can only see their own assigned tasks)
   const visibleTasks = useMemo(() => {
     return tasks.filter(task => {
-      if (isEmployee && task.assigneeId.toLowerCase() !== user?.email.toLowerCase()) {
+      if (isEmployee && !isUserAssignedToTask(task, user?.email)) {
         return false;
       }
       return true;
@@ -270,6 +272,11 @@ export default function CalendarPage() {
             setIsDetailOpen(false);
           }}
           task={selectedTask}
+          onEditClick={(task) => {
+            setTaskToEdit(task);
+            setIsDetailOpen(false);
+            setIsEditOpen(true);
+          }}
         />
       )}
 
@@ -278,6 +285,20 @@ export default function CalendarPage() {
         isOpen={createOpen}
         onClose={() => setCreateOpen(false)}
         onSuccess={() => {}}
+      />
+
+      {/* Edit modal */}
+      <CreateTaskDialog
+        isOpen={isEditOpen}
+        onClose={() => {
+          setIsEditOpen(false);
+          setTaskToEdit(undefined);
+        }}
+        taskToEdit={taskToEdit}
+        onSuccess={() => {
+          setIsEditOpen(false);
+          setTaskToEdit(undefined);
+        }}
       />
 
     </div>

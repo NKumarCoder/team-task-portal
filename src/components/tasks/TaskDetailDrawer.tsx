@@ -4,8 +4,10 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
+  Plus,
   Calendar,
   User,
+  UserPlus,
   Clock,
   Edit3,
   Trash2,
@@ -26,10 +28,14 @@ import {
   CheckSquare,
   Square
 } from 'lucide-react';
-import { Task, ActivityLog, Member, Subtask } from '@/types';
+import { Task, ActivityLog, Member, Subtask, TaskStatus } from '@/types';
 import PriorityBadge from './PriorityBadge';
 import StatusBadge from './StatusBadge';
-import { formatDate, formatTimeAgo } from '@/utils';
+import StatusUpdateModal from './StatusUpdateModal';
+import { ACTIVE_TASK_STATUS_LIST, TASK_STATUS_CONFIG } from '@/constants';
+import { formatDate, formatTimeAgo, getTaskAssignees, isUserAssignedToTask } from '@/utils';
+import { canAddCoAssignee } from '@/utils/permissions';
+import AddCoAssigneePopover from '@/components/ui/AddCoAssigneePopover';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
 import toast from 'react-hot-toast';
@@ -37,16 +43,15 @@ import toast from 'react-hot-toast';
 // Activity meta helper - moved outside component
 const getActivityMeta = (action: string) => {
   const act = action.toLowerCase();
-  if (act.includes('created')) return { icon: Sparkles, color: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30' };
-  if (act.includes('assigned') || act.includes('reassigned')) return { icon: User, color: 'text-blue-400 bg-blue-500/20 border-blue-500/30' };
+  if (act.includes('created')) return { icon: Plus, color: 'text-blue-400 bg-blue-500/20 border-blue-500/30' };
+  if (act.includes('co-assignee') || act.includes('delegate')) return { icon: UserPlus, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
+  if (act.includes('assigned')) return { icon: User, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
+  if (act.includes('uat rejected') || act.includes('rejected')) return { icon: AlertCircle, color: 'text-rose-400 bg-rose-500/20 border-rose-500/30' };
   if (act.includes('priority')) return { icon: AlertTriangle, color: 'text-orange-400 bg-orange-500/20 border-orange-500/30' };
-  if (act.includes('due date') || act.includes('deadline')) return { icon: Calendar, color: 'text-violet-400 bg-violet-500/20 border-violet-500/30' };
-  if (act.includes('description')) return { icon: FileText, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
-  if (act.includes('remarks')) return { icon: Edit3, color: 'text-amber-400 bg-amber-500/20 border-amber-500/30' };
   if (act.includes('deleted')) return { icon: Trash2, color: 'text-red-400 bg-red-500/20 border-red-500/30' };
   if (act.includes('restored')) return { icon: History, color: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30' };
   if (act.includes('completed')) return { icon: CheckSquare, color: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30' };
-  if (act.includes('live')) return { icon: Sparkles, color: 'text-cyan-400 bg-cyan-500/20 border-cyan-500/30' };
+  if (act.includes('live') || act.includes('deployed')) return { icon: Sparkles, color: 'text-cyan-400 bg-cyan-500/20 border-cyan-500/30' };
   if (act.includes('testing')) return { icon: Clock, color: 'text-purple-400 bg-purple-500/20 border-purple-500/30' };
   if (act.includes('code review')) return { icon: Lock, color: 'text-amber-400 bg-amber-500/20 border-amber-500/30' };
   return { icon: Activity, color: 'text-gray-400 bg-gray-500/20 border-gray-500/30' };
@@ -67,12 +72,42 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
+  const [isAddCoAssigneeOpen, setIsAddCoAssigneeOpen] = useState(false);
+
+  // Status Change Modal State
+  const [statusModalTarget, setStatusModalTarget] = useState<TaskStatus | null>(null);
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
 
   // Refs
   const activitiesEndRef = useRef<HTMLDivElement>(null);
 
   const isEmployee = user?.role === 'Member';
   const isManager = user?.role === 'Admin' || user?.role === 'SuperAdmin';
+  const userCanAddCoAssignee = canAddCoAssignee(task, user);
+  const canChangeStatus = isManager || (isEmployee && isUserAssignedToTask(task, user?.email));
+
+  const handleSelectStatus = async (newStatus: TaskStatus) => {
+    if (!task || newStatus === task.status) return;
+    
+    if (newStatus === 'uat-rejected') {
+      setStatusModalTarget(newStatus);
+      setIsStatusModalOpen(true);
+      return;
+    }
+
+    try {
+      await dbService.updateTask(task.id!, { status: newStatus }, user?.email || '', user?.displayName || '');
+      toast.success(`Status updated to ${TASK_STATUS_CONFIG[newStatus]?.label || newStatus}`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to update status');
+    }
+  };
+
+  const handleConfirmStatusChange = async (targetStatus: TaskStatus, comment: string) => {
+    if (!task?.id) return;
+    await dbService.updateTask(task.id, { status: targetStatus }, user?.email || '', user?.displayName || '', comment);
+    toast.success(`Status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
+  };
 
   // Real-time task sync
   useEffect(() => {
@@ -184,27 +219,30 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
   };
 
   return (
-    <AnimatePresence>
-      {isOpen && task && (
-        <div className="fixed inset-0 z-40 overflow-hidden select-none">
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 0.4 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-black"
-          />
-
-          {/* Sliding Panel - SOLID DARK BACKGROUND */}
-          <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
+    <>
+      <AnimatePresence>
+        {isOpen && task && (
+          <div key="task-detail-drawer-container" className="fixed inset-0 z-40 overflow-hidden select-none">
+            {/* Backdrop */}
             <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-              className="w-screen max-w-lg bg-slate-950 border-l border-slate-800 p-6 shadow-2xl flex flex-col h-full overflow-hidden"
-            >
+              key="task-detail-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.4 }}
+              exit={{ opacity: 0 }}
+              onClick={onClose}
+              className="fixed inset-0 bg-black"
+            />
+
+            {/* Sliding Panel - SOLID DARK BACKGROUND */}
+            <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
+              <motion.div
+                key="task-detail-panel"
+                initial={{ x: '100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 220 }}
+                className="w-screen max-w-lg bg-slate-950 border-l border-slate-800 p-6 shadow-2xl flex flex-col h-full overflow-hidden"
+              >
               {/* Header */}
               <div className="flex justify-between items-start pb-4 border-b border-slate-800 shrink-0">
                 <div>
@@ -212,7 +250,7 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                   <h2 className="text-xl font-semibold text-white mt-1">{task.title}</h2>
                 </div>
                 <div className="flex items-center gap-2">
-                  {onEditClick && (!isEmployee || (task.assigneeId && task.assigneeId.toLowerCase() === user?.email.toLowerCase())) && (
+                  {onEditClick && (!isEmployee || isUserAssignedToTask(task, user?.email)) && (
                     <button
                       onClick={() => onEditClick(task)}
                       className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-slate-800 cursor-pointer transition-all"
@@ -253,7 +291,22 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                 {/* Status & Priority */}
                 <div className="grid grid-cols-2 gap-4 bg-slate-900 p-4 rounded-xl border border-slate-800">
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Status</span>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Status</span>
+                      {canChangeStatus && (
+                        <select
+                          value={task.status}
+                          onChange={(e) => handleSelectStatus(e.target.value as TaskStatus)}
+                          className="text-[10px] bg-slate-800/90 text-primary border border-slate-700 rounded-md px-1.5 py-0.5 outline-none cursor-pointer hover:border-primary/50 transition-colors"
+                        >
+                          {ACTIVE_TASK_STATUS_LIST.map((st) => (
+                            <option key={st} value={st}>
+                              {TASK_STATUS_CONFIG[st]?.label || st}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
                     <StatusBadge status={task.status} />
                   </div>
                   <div>
@@ -261,6 +314,22 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                     <PriorityBadge priority={task.priority} />
                   </div>
                 </div>
+
+                {/* UAT Rejection Reason Banner (if UAT Rejected) */}
+                {task.status === 'uat-rejected' && (
+                  <div className="bg-rose-950/40 border border-rose-800/60 rounded-xl p-4 space-y-2 shadow-inner">
+                    <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+                      <span className="uppercase tracking-wider text-[10px]">UAT Rejection Reason</span>
+                    </div>
+                    <p className="text-xs text-rose-200 leading-relaxed whitespace-pre-wrap pl-6 font-medium">
+                      {task.latestRejectionReason || 
+                       (task.statusHistory && [...task.statusHistory].reverse().find(h => h.status === 'uat-rejected')?.comment) || 
+                       task.remarks || 
+                       'No rejection reason recorded.'}
+                    </p>
+                  </div>
+                )}
 
                 {/* Task Details */}
                 <div className="space-y-4">
@@ -276,20 +345,42 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                     </div>
                   </div>
 
-                  {/* Assigned To & Estimated Hours */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Assigned To</label>
-                      <div className="flex items-center gap-2">
-                        <div
-                          className="w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[10px]"
-                          style={{ backgroundColor: task.assigneeColor }}
-                        >
-                          {task.assigneeName.charAt(0).toUpperCase()}
+                  {/* Assigned To Multi-List */}
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Assigned To</label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {getTaskAssignees(task).map((assignee, aIdx) => (
+                        <div key={assignee.id || `assignee-${aIdx}`} className="inline-flex items-center gap-2 bg-slate-900 border border-slate-800 px-2.5 py-1.5 rounded-lg shadow-xs">
+                          <div
+                            className="w-5 h-5 rounded-full flex items-center justify-center font-bold text-white text-[9px] shrink-0"
+                            style={{ backgroundColor: assignee.color || '#6366f1' }}
+                          >
+                            {assignee.name.charAt(0).toUpperCase()}
+                          </div>
+                          <span className="text-xs font-semibold text-gray-300">{assignee.name}</span>
                         </div>
-                        <span className="text-xs font-semibold text-gray-300">{task.assigneeName}</span>
-                      </div>
+                      ))}
+                      {getTaskAssignees(task).length === 0 && (
+                        <span className="text-xs text-gray-500">Unassigned</span>
+                      )}
+
+                      {/* + Add Co-Assignee Button */}
+                      {userCanAddCoAssignee && (
+                        <button
+                          type="button"
+                          onClick={() => setIsAddCoAssigneeOpen(true)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10 hover:border-primary/70 text-primary text-xs font-semibold transition-all cursor-pointer select-none"
+                          title="Add Co-Assignee / Delegate"
+                        >
+                          <UserPlus className="h-3.5 w-3.5" />
+                          <span>Add Co-Assignee</span>
+                        </button>
+                      )}
                     </div>
+                  </div>
+
+                  {/* Estimated Hours & Due Date */}
+                  <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Estimated Hours</label>
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-300">
@@ -297,10 +388,6 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                         <span>{task.estimatedHours}h</span>
                       </div>
                     </div>
-                  </div>
-
-                  {/* Due Date & Last Updated */}
-                  <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Due Date</label>
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-300">
@@ -308,12 +395,14 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                         <span>{formatDate(task.expectedCompletionDate)}</span>
                       </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Last Updated</label>
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-400">
-                        <Clock className="h-4 w-4" />
-                        <span>{formatDate(task.updatedDate)}</span>
-                      </div>
+                  </div>
+
+                  {/* Last Updated */}
+                  <div>
+                    <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Last Updated</label>
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-400">
+                      <Clock className="h-4 w-4" />
+                      <span>{formatDate(task.updatedDate)}</span>
                     </div>
                   </div>
 
@@ -358,14 +447,14 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                     </label>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
-                      {task.attachments.map((att) => {
+                      {task.attachments.map((att, attIdx) => {
                         const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(att.name);
                         const FileIcon = isImage ? ImageIcon : FileArchive;
                         const sizeMB = (att.size / (1024 * 1024)).toFixed(2);
 
                         return (
                           <div
-                            key={att.id}
+                            key={att.id || att.name || `att-${attIdx}`}
                             className="flex items-center justify-between p-2 rounded-lg bg-slate-950/40 border border-slate-800 hover:border-slate-700 transition-colors gap-3 group"
                           >
                             <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -418,14 +507,14 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
 
                     {/* Subtask items */}
                     <div className="space-y-1.5 bg-slate-900 p-3 rounded-lg border border-slate-800">
-                      {subtasks.map((sub) => {
+                      {subtasks.map((sub, sIdx) => {
                         const isDone = sub.status === 'completed';
-                        const isAssignedToCurrent = task.assigneeId.toLowerCase() === user?.email.toLowerCase();
+                        const isAssignedToCurrent = isUserAssignedToTask(task, user?.email);
                         const canToggle = isAssignedToCurrent || isManager;
 
                         return (
                           <div
-                            key={sub.id}
+                            key={sub.id || `sub-${sIdx}`}
                             onClick={() => { if (canToggle) handleToggleSubtask(sub); }}
                             className={`flex items-center gap-2.5 py-2 px-1 text-xs font-medium rounded select-none transition-colors ${canToggle ? 'cursor-pointer hover:bg-slate-800' : ''
                               } ${isDone ? 'text-gray-500' : 'text-gray-300'}`}
@@ -465,7 +554,7 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                 )}
 
                 {/* Dependencies */}
-                {dependenciesList.length > 0 && (
+                {dependenciesList.filter(Boolean).length > 0 && (
                   <div className="space-y-3">
                     <label className="text-[10px] uppercase font-bold text-gray-400 flex items-center gap-2 tracking-wider">
                       <AlertTriangle className="h-4 w-4 text-amber-400" />
@@ -473,12 +562,12 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                     </label>
 
                     <div className="space-y-2">
-                      {dependenciesList.map(depId => {
+                      {dependenciesList.filter(Boolean).map((depId, dIdx) => {
                         const depTask = allTasks.find(t => t.taskId === depId);
                         const isDone = depTask ? (depTask.status === 'completed' || depTask.status === 'moved-to-live' || depTask.status === 'deployed') : false;
                         return (
                           <div
-                            key={depId}
+                            key={depId || `dep-${dIdx}`}
                             className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs font-medium ${isDone
                                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                                 : 'bg-red-500/15 text-red-300 border-red-500/30'
@@ -514,7 +603,7 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                         const isLast = idx === taskActivities.length - 1;
 
                         return (
-                          <div key={activity.id} className="relative flex gap-3">
+                          <div key={activity.id || activity.activityId || `act-${idx}`} className="relative flex gap-3">
                             {/* Timeline connector line */}
                             {!isLast && (
                               <div className="absolute left-[18px] top-11 w-0.5 h-10 bg-slate-700" />
@@ -563,5 +652,35 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
         </div>
       )}
     </AnimatePresence>
+
+    {/* Add Co-Assignee Modal Popover */}
+    {task && (
+      <AddCoAssigneePopover
+        key="add-coassignee-popover"
+        task={task}
+        isOpen={isAddCoAssigneeOpen}
+        onClose={() => setIsAddCoAssigneeOpen(false)}
+        currentUser={user}
+        onSuccess={(updatedTask) => {
+          setTask(updatedTask);
+        }}
+      />
+    )}
+
+    {/* Status Update & UAT Rejection Modal */}
+    {task && (
+      <StatusUpdateModal
+        key="task-detail-status-modal"
+        isOpen={isStatusModalOpen}
+        onClose={() => {
+          setIsStatusModalOpen(false);
+          setStatusModalTarget(null);
+        }}
+        task={task}
+        targetStatus={statusModalTarget}
+        onConfirm={handleConfirmStatusChange}
+      />
+    )}
+  </>
   );
 }

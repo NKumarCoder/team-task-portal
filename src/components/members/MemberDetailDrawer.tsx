@@ -17,7 +17,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { Member, Task, TaskStatus, TaskPriority, UserRole } from '@/types';
-import { formatDate } from '@/utils';
+import { formatDate, isUserAssignedToTask } from '@/utils';
 import StatusBadge from '../tasks/StatusBadge';
 import PriorityBadge from '../tasks/PriorityBadge';
 
@@ -31,18 +31,18 @@ interface MemberDetailDrawerProps {
 export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: MemberDetailDrawerProps) {
   if (!member) return null;
 
-  // Filter tasks assigned to this member
+  // Filter tasks assigned to this member (supports multi-assignees)
   const memberTasks = useMemo(() => {
-    return tasks.filter(t => t.assigneeId.toLowerCase() === member.email.toLowerCase());
+    return tasks.filter(t => isUserAssignedToTask(t, member.email));
   }, [tasks, member]);
 
   // Compute Task Categories
   const activeTasks = useMemo(() => {
-    return memberTasks.filter(t => t.status !== 'completed' && t.status !== 'moved-to-live' && t.status !== 'cancelled');
+    return memberTasks.filter(t => t.status !== 'completed' && t.status !== 'prod-deployed' && t.status !== 'moved-to-live' && t.status !== 'cancelled');
   }, [memberTasks]);
 
   const completedTasks = useMemo(() => {
-    return memberTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live');
+    return memberTasks.filter(t => t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live' || t.status === 'deployed');
   }, [memberTasks]);
 
   const today = new Date();
@@ -156,9 +156,10 @@ export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: M
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-40 overflow-hidden select-none">
+        <div key="member-detail-drawer-container" className="fixed inset-0 z-40 overflow-hidden select-none">
           {/* Backdrop */}
           <motion.div
+            key="member-detail-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.4 }}
             exit={{ opacity: 0 }}
@@ -169,6 +170,7 @@ export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: M
           {/* Sliding Drawer */}
           <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
             <motion.div
+              key="member-detail-panel"
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
@@ -276,8 +278,8 @@ export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: M
                   
                   {activeTasks.length > 0 ? (
                     <div className="space-y-3">
-                      {activeTasks.map(task => (
-                        <div key={task.id} className="p-3 bg-accent/15 rounded-xl border border-card-border flex flex-col justify-between gap-2.5">
+                      {activeTasks.map((task, idx) => (
+                        <div key={task.id || task.taskId || `active-${idx}`} className="p-3 bg-accent/15 rounded-xl border border-card-border flex flex-col justify-between gap-2.5">
                           <div>
                             <div className="flex justify-between items-center gap-2 mb-1.5">
                               <span className="text-[9px] font-bold text-muted-foreground font-mono">{task.taskId}</span>
@@ -311,8 +313,8 @@ export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: M
 
                   {completedTasks.length > 0 ? (
                     <div className="space-y-2.5">
-                      {completedTasks.slice(0, 5).map(task => (
-                        <div key={task.id} className="p-2.5 bg-emerald-500/5 border border-emerald-500/10 rounded-xl flex justify-between items-center text-xs">
+                      {completedTasks.slice(0, 5).map((task, idx) => (
+                        <div key={task.id || task.taskId || `comp-${idx}`} className="p-2.5 bg-emerald-500/5 border border-emerald-500/10 rounded-xl flex justify-between items-center text-xs">
                           <div className="truncate max-w-[260px]">
                             <span className="font-bold font-mono text-[9px] text-muted-foreground mr-2">{task.taskId}</span>
                             <span className="font-extrabold line-clamp-1 text-foreground inline">{task.title}</span>
@@ -337,8 +339,8 @@ export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: M
                       Overdue Items ({overdueTasks.length})
                     </span>
                     <div className="space-y-2">
-                      {overdueTasks.map(task => (
-                        <div key={task.id} className="p-2.5 bg-red-500/5 border border-red-500/10 rounded-xl flex justify-between items-center text-xs">
+                      {overdueTasks.map((task, idx) => (
+                        <div key={task.id || task.taskId || `overdue-${idx}`} className="p-2.5 bg-red-500/5 border border-red-500/10 rounded-xl flex justify-between items-center text-xs">
                           <span className="font-mono text-[9px] font-bold text-red-500 mr-2 shrink-0">{task.taskId}</span>
                           <span className="font-extrabold line-clamp-1 text-foreground flex-1">{task.title}</span>
                           <span className="text-[9px] text-red-500 font-bold shrink-0 pl-2">Due {formatDate(task.expectedCompletionDate)}</span>
