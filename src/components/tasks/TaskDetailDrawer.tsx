@@ -33,7 +33,7 @@ import PriorityBadge from './PriorityBadge';
 import StatusBadge from './StatusBadge';
 import StatusUpdateModal from './StatusUpdateModal';
 import { ACTIVE_TASK_STATUS_LIST, TASK_STATUS_CONFIG } from '@/constants';
-import { formatDate, formatTimeAgo, getTaskAssignees, isUserAssignedToTask } from '@/utils';
+import { formatDate, formatTimeAgo, getTaskAssignees, isUserAssignedToTask, getTaskEstimatedDays, formatEstimatedDays } from '@/utils';
 import { canAddCoAssignee } from '@/utils/permissions';
 import AddCoAssigneePopover from '@/components/ui/AddCoAssigneePopover';
 import { useAuth } from '@/hooks/useAuth';
@@ -379,13 +379,13 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                     </div>
                   </div>
 
-                  {/* Estimated Hours & Due Date */}
+                  {/* Estimated Effort & Due Date */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Estimated Hours</label>
+                      <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Estimated Effort</label>
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-300">
                         <Clock className="h-4 w-4 text-gray-400" />
-                        <span>{task.estimatedHours}h</span>
+                        <span>{formatEstimatedDays(getTaskEstimatedDays(task))}</span>
                       </div>
                     </div>
                     <div>
