@@ -491,16 +491,6 @@ export default function KanbanPage() {
         />
       )}
 
-      {/* Floating Create Task Button - Fixed to viewport */}
-      <button
-        onClick={() => setCreateOpen(true)}
-        className="fixed bottom-6 right-6 flex items-center justify-center p-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-full shadow-lg hover:shadow-xl z-50 transition-all duration-200 hover:scale-110 active:scale-95 group"
-        title="Create New Task"
-        aria-label="Create new task"
-      >
-        <Plus className="h-6 w-6" />
-      </button>
-
     </div>
   );
 }
