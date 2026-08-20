@@ -282,5 +282,186 @@ export function getTaskEstimatedDays(task?: Partial<Task> | null): number {
   return 0;
 }
 
+import type { Member, TaskStatus } from '@/types';
+import { ACTIVE_TASK_STATUS_LIST, TASK_STATUS_CONFIG } from '@/constants';
+
+export interface StatusCountItem {
+  status: TaskStatus;
+  label: string;
+  count: number;
+  color: string;
+  badgeBg: string;
+  badgeColor: string;
+  badgeBorder: string;
+}
+
+export interface MemberProjectWorkload {
+  member: Member;
+  totalTasks: number;
+  activeTasks: number;
+  completedTasks: number;
+  statusCounts: Record<string, number>;
+  nonZeroStatusCounts: StatusCountItem[];
+  workloadPoints: number;
+  workloadPercentage: number;
+  statusLabel: 'Normal' | 'Medium' | 'High' | 'Overloaded';
+  cardStyle: string;
+  badgeStyle: string;
+  progressColor: string;
+  tasks: Task[];
+  urgentTask: Task | null;
+  completionRate: number;
+}
+
+export interface ProjectWorkloadResult {
+  projectTotalTasks: number;
+  projectActiveTasks: number;
+  projectCompletedTasks: number;
+  totalTeamMembers: number;
+  activeTeamMembersCount: number;
+  totalTeamAssignments: number;
+  memberWorkloads: MemberProjectWorkload[];
+}
+
+/**
+ * Calculates project-aware, multi-assignee-compatible member workloads.
+ * - If projectName === 'all', calculates across all projects.
+ * - Shared tasks give +1 workload to each assigned member, while counting as 1 task for the project total.
+ * - Reuses the exact workload formula from Dashboard (Critical: 5, High: 3, Medium: 2, Low: 1).
+ */
+export function getProjectMemberWorkload(
+  tasks: Task[] = [],
+  members: Member[] = [],
+  projectName: string = 'all'
+): ProjectWorkloadResult {
+  // 1. Filter project tasks
+  const projectTasks = projectName === 'all'
+    ? tasks
+    : tasks.filter(t => (t.projectName || '').toLowerCase() === projectName.toLowerCase());
+
+  const projectTotalTasks = projectTasks.length;
+  
+  const isCompletedStatus = (s: string) => s === 'completed' || s === 'prod-deployed' || s === 'moved-to-live';
+  const isCancelledStatus = (s: string) => s === 'cancelled';
+
+  const projectCompletedTasks = projectTasks.filter(t => isCompletedStatus(t.status)).length;
+  const projectActiveTasks = projectTasks.filter(t => !isCompletedStatus(t.status) && !isCancelledStatus(t.status)).length;
+
+  // 2. Compute workload for each member
+  const memberWorkloads: MemberProjectWorkload[] = members.map(member => {
+    const memberTasks = projectTasks.filter(t => isUserAssignedToTask(t, member.email));
+    const active = memberTasks.filter(t => !isCompletedStatus(t.status) && !isCancelledStatus(t.status));
+    const completed = memberTasks.filter(t => isCompletedStatus(t.status));
+
+    // Sort active tasks by urgency (earliest deadline first)
+    const sortedActive = [...active].sort(
+      (a, b) => new Date(a.expectedCompletionDate).getTime() - new Date(b.expectedCompletionDate).getTime()
+    );
+    const urgentTask = sortedActive[0] || null;
+
+    // Status distribution
+    const statusCounts: Record<string, number> = {};
+    ACTIVE_TASK_STATUS_LIST.forEach(st => {
+      statusCounts[st] = 0;
+    });
+
+    memberTasks.forEach(t => {
+      if (statusCounts[t.status] !== undefined) {
+        statusCounts[t.status] += 1;
+      } else {
+        statusCounts[t.status] = 1;
+      }
+    });
+
+    const nonZeroStatusCounts: StatusCountItem[] = ACTIVE_TASK_STATUS_LIST
+      .map(st => {
+        const count = statusCounts[st] || 0;
+        const config = TASK_STATUS_CONFIG[st] || {
+          label: st,
+          color: '#6366f1',
+          badgeBg: 'bg-primary/10',
+          badgeColor: 'text-primary',
+          badgeBorder: 'border-primary/20',
+        };
+        return {
+          status: st,
+          label: config.label,
+          count,
+          color: config.color,
+          badgeBg: config.badgeBg,
+          badgeColor: config.badgeColor,
+          badgeBorder: config.badgeBorder,
+        };
+      })
+      .filter(item => item.count > 0);
+
+    // Workload points (Critical: 5, High: 3, Medium: 2, Low: 1)
+    const workloadPoints = active.reduce((acc, t) => {
+      const pts = t.priority === 'critical' ? 5 
+                : t.priority === 'high' ? 3 
+                : t.priority === 'medium' ? 2 
+                : 1;
+      return acc + pts;
+    }, 0);
+
+    let statusLabel: 'Normal' | 'Medium' | 'High' | 'Overloaded' = 'Normal';
+    let cardStyle = 'border-emerald-500/15 bg-emerald-500/[0.03] hover:border-emerald-500/35 hover:bg-emerald-500/[0.06] shadow-emerald-500/[0.02]';
+    let badgeStyle = 'bg-emerald-500/10 text-emerald-500 border-emerald-500/25';
+    let progressColor = 'bg-emerald-500';
+
+    if (workloadPoints >= 3 && workloadPoints <= 6) {
+      statusLabel = 'Medium';
+      cardStyle = 'border-amber-500/15 bg-amber-500/[0.03] hover:border-amber-500/35 hover:bg-amber-500/[0.06] shadow-amber-500/[0.02]';
+      badgeStyle = 'bg-amber-500/10 text-amber-500 border-amber-500/25';
+      progressColor = 'bg-amber-500';
+    } else if (workloadPoints >= 7 && workloadPoints <= 10) {
+      statusLabel = 'High';
+      cardStyle = 'border-orange-500/15 bg-orange-500/[0.03] hover:border-orange-500/35 hover:bg-orange-500/[0.06] shadow-orange-500/[0.02]';
+      badgeStyle = 'bg-orange-500/10 text-orange-500 border-orange-500/25';
+      progressColor = 'bg-orange-500';
+    } else if (workloadPoints > 10) {
+      statusLabel = 'Overloaded';
+      cardStyle = 'border-red-500/15 bg-red-500/[0.03] hover:border-red-500/35 hover:bg-red-500/[0.06] shadow-red-500/[0.02]';
+      badgeStyle = 'bg-red-500/10 text-red-500 border-red-500/25';
+      progressColor = 'bg-red-500';
+    }
+
+    const workloadPercentage = Math.min(100, Math.round((workloadPoints / 15) * 100));
+    const completionRate = memberTasks.length > 0 ? Math.round((completed.length / memberTasks.length) * 100) : 0;
+
+    return {
+      member,
+      totalTasks: memberTasks.length,
+      activeTasks: active.length,
+      completedTasks: completed.length,
+      statusCounts,
+      nonZeroStatusCounts,
+      workloadPoints,
+      workloadPercentage,
+      statusLabel,
+      cardStyle,
+      badgeStyle,
+      progressColor,
+      tasks: memberTasks,
+      urgentTask,
+      completionRate,
+    };
+  });
+
+  const activeTeamMembersCount = memberWorkloads.filter(m => m.totalTasks > 0).length;
+  const totalTeamAssignments = memberWorkloads.reduce((acc, m) => acc + m.totalTasks, 0);
+
+  return {
+    projectTotalTasks,
+    projectActiveTasks,
+    projectCompletedTasks,
+    totalTeamMembers: members.length,
+    activeTeamMembersCount,
+    totalTeamAssignments,
+    memberWorkloads,
+  };
+}
+
+
 
 
