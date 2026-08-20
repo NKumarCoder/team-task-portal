@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useEffect, useState, useMemo } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,18 +5,19 @@ import * as z from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, Loader2, Check, Copy } from 'lucide-react';
 import DatePicker from '@/components/ui/DatePicker';
+import MultiAssigneeSelect from '@/components/ui/MultiAssigneeSelect';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
-import { Task, TaskPriority, TaskStatus, Member, Project, Attachment } from '@/types';
+import { Task, TaskPriority, TaskStatus, Member, Project, Attachment, TaskAssignee } from '@/types';
 import toast from 'react-hot-toast';
 import { TASK_PRIORITIES } from '@/constants';
-import { formatDate } from '@/utils';
+import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
 
 const taskFormSchema = z.object({
   projectName: z.string().min(1, 'Project Name is required'),
   title: z.string().min(1, 'Task Title is required'),
   description: z.string(),
-  assigneeEmail: z.string().min(1, 'Assigned To is required').email('Invalid email address'),
+  assigneeEmails: z.array(z.string().email('Invalid email')).min(1, 'At least one assignee is required'),
   priority: z.enum(['critical', 'high', 'medium', 'low']),
   module: z.string().min(1, 'Module is required'),
   startDate: z.string().optional().or(z.literal('')),
@@ -73,7 +72,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       projectName: '',
       title: '',
       description: '',
-      assigneeEmail: '',
+      assigneeEmails: [],
       priority: 'medium',
       module: '',
       startDate: '',
@@ -185,7 +184,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         projectName: taskToEdit.projectName,
         title: taskToEdit.title,
         description: taskToEdit.description || '',
-        assigneeEmail: taskToEdit.assigneeId,
+        assigneeEmails: getTaskAssigneeIds(taskToEdit),
         priority: taskToEdit.priority,
         module: taskToEdit.module,
         startDate: formattedStartDate,
@@ -198,7 +197,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         projectName: '',
         title: '',
         description: '',
-        assigneeEmail: '',
+        assigneeEmails: [],
         priority: 'medium',
         module: '',
         startDate: '',
@@ -211,10 +210,17 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   const onSubmit = async (values: TaskFormValues) => {
     setSaving(true);
     try {
-      // Resolve assignee name & color
-      const matchedMember = members.find(m => m.email.toLowerCase() === values.assigneeEmail.toLowerCase());
-      const assigneeName = matchedMember ? matchedMember.name : values.assigneeEmail.split('@')[0];
-      const assigneeColor = matchedMember ? matchedMember.avatarColor : '#6366f1';
+      // Resolve all assignees objects
+      const assignees: TaskAssignee[] = values.assigneeEmails.map(email => {
+        const matched = members.find(m => m.email.toLowerCase() === email.toLowerCase());
+        return {
+          id: email.toLowerCase(),
+          name: matched ? matched.name : email.split('@')[0],
+          color: matched?.avatarColor || '#6366f1'
+        };
+      });
+      const assigneeIds = assignees.map(a => a.id);
+      const primaryAssignee = assignees[0] || { id: '', name: 'Unassigned', color: '#6366f1' };
 
       if (isEditMode && taskToEdit) {
         // Record timeline history if status changed
@@ -236,9 +242,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           projectName: values.projectName,
           title: values.title,
           description: values.description,
-          assigneeId: values.assigneeEmail,
-          assigneeName,
-          assigneeColor,
+          assignees,
+          assigneeIds,
+          // Legacy backward-compatibility fields
+          assigneeId: primaryAssignee.id,
+          assigneeName: primaryAssignee.name,
+          assigneeColor: primaryAssignee.color,
           priority: values.priority,
           status: 'assigned' as TaskStatus,
           module: values.module,
@@ -269,9 +278,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           projectName: values.projectName,
           title: values.title,
           description: values.description,
-          assigneeId: values.assigneeEmail,
-          assigneeName,
-          assigneeColor,
+          assignees,
+          assigneeIds,
+          // Legacy backward-compatibility fields
+          assigneeId: primaryAssignee.id,
+          assigneeName: primaryAssignee.name,
+          assigneeColor: primaryAssignee.color,
           priority: values.priority,
           status: 'assigned' as TaskStatus,
           module: values.module,
@@ -357,9 +369,10 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div key="create-task-dialog-wrapper" className="fixed inset-0 z-50 flex items-center justify-center p-4">
           {/* Backdrop */}
           <motion.div
+            key="create-task-dialog-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.5 }}
             exit={{ opacity: 0 }}
@@ -369,6 +382,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
 
           {/* Modal Container */}
           <motion.div
+            key="create-task-dialog-container"
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -417,7 +431,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                   </div>
                   <div>
                     <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground block mb-0.5">Assigned To</span>
-                    <span className="font-semibold text-foreground">{createdTask.assigneeName}</span>
+                    <span className="font-semibold text-foreground">{getTaskAssigneeNames(createdTask)}</span>
                   </div>
                 </div>
 
@@ -426,7 +440,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                   <button
                     type="button"
                     onClick={() => {
-                      const shareText = `Ticket: ${createdTask.taskId}\nProject: ${createdTask.projectName}\nTitle: ${createdTask.title}\nAssigned To: ${createdTask.assigneeName}\nDue Date: ${formatDate(createdTask.expectedCompletionDate)}\nLink: ${window.location.origin}/dashboard`;
+                      const shareText = `Ticket: ${createdTask.taskId}\nProject: ${createdTask.projectName}\nTitle: ${createdTask.title}\nAssigned To: ${getTaskAssigneeNames(createdTask)}\nDue Date: ${formatDate(createdTask.expectedCompletionDate)}\nLink: ${window.location.origin}/dashboard`;
                       navigator.clipboard.writeText(shareText);
                       toast.success('Share details copied to clipboard!');
                     }}
@@ -556,18 +570,21 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assigned To *</label>
-                  <select
-                    disabled={loadingMembers || isMemberAndEditing}
-                    className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary ${errors.assigneeEmail ? 'border-destructive' : 'border-border'
-                      }`}
-                    {...register('assigneeEmail')}
-                  >
-                    <option value="">Select a team member</option>
-                    {members.map(m => (
-                      <option key={m.id} value={m.email}>{m.name} ({m.email})</option>
-                    ))}
-                  </select>
-                  {errors.assigneeEmail && <p className="text-[9px] text-destructive font-semibold">{errors.assigneeEmail.message}</p>}
+                  <Controller
+                    control={control}
+                    name="assigneeEmails"
+                    render={({ field }) => (
+                      <MultiAssigneeSelect
+                        members={members}
+                        selectedEmails={field.value || []}
+                        onChange={field.onChange}
+                        hasError={!!errors.assigneeEmails}
+                        disabled={loadingMembers || isMemberAndEditing}
+                        placeholder="Select team members..."
+                      />
+                    )}
+                  />
+                  {errors.assigneeEmails && <p className="text-[9px] text-destructive font-semibold">{errors.assigneeEmails.message}</p>}
                 </div>
 
                 <div className="space-y-1">

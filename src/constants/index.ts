@@ -31,6 +31,8 @@ export const USER_ROLES: { value: UserRole; label: string }[] = [
   { value: 'Member', label: 'Member' },
 ];
 
+export const MAX_ASSIGNEES = 10;
+
 export const FIREBASE_COLLECTIONS = {
   USERS: 'users',
   TASKS: 'tasks',

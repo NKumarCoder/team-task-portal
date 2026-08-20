@@ -40,7 +40,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { formatDate } from '@/utils';
+import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
 import toast from 'react-hot-toast';
 
 export default function AllTasksPage() {
@@ -60,27 +60,33 @@ export default function AllTasksPage() {
     return () => unsubscribe();
   }, []);
 
-  // Compute project stats and details
+  // Compute Project Summaries
   const projectsData = useMemo(() => {
-    const projectNames = Array.from(new Set(tasks.map(t => t.projectName))).filter(Boolean);
-    
-    return projectNames.map(name => {
-      const projectTasks = tasks.filter(t => t.projectName === name);
+    const map = new Map<string, Task[]>();
+    tasks.forEach(t => {
+      const p = t.projectName || 'Unassigned';
+      if (!map.has(p)) map.set(p, []);
+      map.get(p)!.push(t);
+    });
+
+    return Array.from(map.entries()).map(([name, projectTasks]) => {
       const total = projectTasks.length;
       const completed = projectTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live').length;
-      const testing = projectTasks.filter(t => t.status === 'testing').length;
+      const testing = projectTasks.filter(t => t.status === 'testing' || t.status === 'uat' || t.status === 'code-review').length;
       const inProgress = projectTasks.filter(t => t.status === 'in-progress').length;
       const blocked = projectTasks.filter(t => t.status === 'blocked').length;
-      const critical = projectTasks.filter(t => t.priority === 'critical').length;
+      const critical = projectTasks.filter(t => t.priority === 'critical' && t.status !== 'completed' && t.status !== 'moved-to-live').length;
       
       const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
       
       // Extract unique assignees
       const assigneeMap = new Map<string, { name: string; color: string }>();
       projectTasks.forEach(t => {
-        if (t.assigneeId && t.assigneeName) {
-          assigneeMap.set(t.assigneeId, { name: t.assigneeName, color: t.assigneeColor });
-        }
+        getTaskAssignees(t).forEach(a => {
+          if (a.id && a.name) {
+            assigneeMap.set(a.id.toLowerCase(), { name: a.name, color: a.color });
+          }
+        });
       });
       const assignees = Array.from(assigneeMap.values());
 
@@ -113,7 +119,7 @@ export default function AllTasksPage() {
       t.taskId,
       `"${t.title.replace(/"/g, '""')}"`,
       `"${t.projectName.replace(/"/g, '""')}"`,
-      `"${t.assigneeName.replace(/"/g, '""')}"`,
+      `"${getTaskAssigneeNames(t).replace(/"/g, '""')}"`,
       t.priority.toUpperCase(),
       t.status.toUpperCase(),
       formatDate(t.expectedCompletionDate),
@@ -178,7 +184,7 @@ export default function AllTasksPage() {
           <td>${t.taskId}</td>
           <td>${t.title}</td>
           <td>${t.projectName}</td>
-          <td>${t.assigneeName}</td>
+          <td>${getTaskAssigneeNames(t)}</td>
           <td>${t.priority.toUpperCase()}</td>
           <td>${t.status.toUpperCase()}</td>
           <td>${formatDate(t.expectedCompletionDate)}</td>
@@ -373,19 +379,40 @@ export default function AllTasksPage() {
         )
       },
       {
-        accessorKey: 'assigneeName',
+        accessorKey: 'assignees',
         header: () => <span className="font-bold text-xs tracking-wider uppercase">Assigned To</span>,
-        cell: ({ row }) => (
-          <div className="flex items-center gap-2">
-            <div
-              className="w-6.5 h-6.5 rounded-full flex items-center justify-center font-bold text-white text-[10px] shadow-sm shrink-0"
-              style={{ backgroundColor: row.original.assigneeColor }}
-            >
-              {row.original.assigneeName.charAt(0).toUpperCase()}
+        cell: ({ row }) => {
+          const assignees = getTaskAssignees(row.original);
+          const names = getTaskAssigneeNames(row.original);
+          return (
+            <div className="flex items-center gap-2" title={names}>
+              <div className="flex items-center shrink-0">
+                {assignees.slice(0, 3).map((a, idx) => (
+                  <div
+                    key={a.id || `assignee-${idx}`}
+                    className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[9px] shadow-sm border border-background shrink-0 ${
+                      idx > 0 ? '-ml-2' : ''
+                    }`}
+                    style={{ backgroundColor: a.color || '#6366f1' }}
+                  >
+                    {a.name.charAt(0).toUpperCase()}
+                  </div>
+                ))}
+                {assignees.length > 3 && (
+                  <div className="w-6 h-6 -ml-2 rounded-full flex items-center justify-center font-bold text-[8px] bg-slate-800 text-muted-foreground border border-background shrink-0 shadow-sm">
+                    +{assignees.length - 3}
+                  </div>
+                )}
+                {assignees.length === 0 && (
+                  <span className="text-xs text-muted-foreground">Unassigned</span>
+                )}
+              </div>
+              <span className="text-xs font-semibold whitespace-nowrap truncate max-w-[140px]">
+                {names}
+              </span>
             </div>
-            <span className="text-xs font-semibold whitespace-nowrap">{row.original.assigneeName}</span>
-          </div>
-        )
+          );
+        }
       },
       {
         accessorKey: 'priority',
@@ -487,14 +514,14 @@ export default function AllTasksPage() {
         task.projectName.toLowerCase().includes(globalFilter.toLowerCase()) ||
         task.description.toLowerCase().includes(globalFilter.toLowerCase()) ||
         task.taskId.toLowerCase().includes(globalFilter.toLowerCase()) ||
-        task.assigneeName.toLowerCase().includes(globalFilter.toLowerCase()) ||
+        getTaskAssignees(task).some(a => a.name.toLowerCase().includes(globalFilter.toLowerCase()) || a.id.toLowerCase().includes(globalFilter.toLowerCase())) ||
         (task.remarks || '').toLowerCase().includes(globalFilter.toLowerCase()) ||
         matchesComments;
 
       // Advanced column searches
       const matchesTaskId = !filterTaskId || task.taskId.toLowerCase().includes(filterTaskId.toLowerCase());
       const matchesProject = !filterProject || task.projectName.toLowerCase().includes(filterProject.toLowerCase());
-      const matchesAssignee = !filterAssignee || task.assigneeName.toLowerCase().includes(filterAssignee.toLowerCase());
+      const matchesAssignee = !filterAssignee || getTaskAssignees(task).some(a => a.name.toLowerCase().includes(filterAssignee.toLowerCase()) || a.id.toLowerCase().includes(filterAssignee.toLowerCase()));
       const matchesStatus = filterStatus === 'all' || task.status === filterStatus;
       const matchesPriority = filterPriority === 'all' || task.priority === filterPriority;
       const matchesModule = !filterModule || task.module.toLowerCase().includes(filterModule.toLowerCase());

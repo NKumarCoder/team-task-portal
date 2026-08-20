@@ -20,7 +20,7 @@ import {
   KeyRound,
   History
 } from 'lucide-react';
-import { formatDate } from '@/utils';
+import { formatDate, isUserAssignedToTask } from '@/utils';
 import toast from 'react-hot-toast';
 
 const AVATAR_COLORS = [
@@ -80,7 +80,7 @@ export default function ProfilePage() {
     if (!user) return { total: 0, completed: 0, pending: 0, workloadPoints: 0, workloadLabel: 'Light', avgDays: 'No tasks completed' };
 
     const email = user.email.toLowerCase();
-    const myTasks = tasks.filter(t => t.assigneeId.toLowerCase() === email);
+    const myTasks = tasks.filter(t => isUserAssignedToTask(t, email));
     
     const total = myTasks.length;
     const completedTasks = myTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live');

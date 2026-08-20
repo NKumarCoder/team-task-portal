@@ -19,7 +19,7 @@ import {
   Lock
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { formatDate } from '@/utils';
+import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
 import PriorityBadge from '@/components/tasks/PriorityBadge';
 import StatusBadge from '@/components/tasks/StatusBadge';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
@@ -52,33 +52,39 @@ export default function KanbanPage() {
   const [selectedEmployee, setSelectedEmployee] = useState('all');
   const [selectedPriority, setSelectedPriority] = useState('all');
 
-  // Detail Drawer States
+  // Detail Drawer & Edit Modal States
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [taskToEdit, setTaskToEdit] = useState<Task | undefined>(undefined);
+  const [isEditOpen, setIsEditOpen] = useState(false);
   const [scrollPosition, setScrollPosition] = useState(0);
   const [maxScrollPosition, setMaxScrollPosition] = useState(0);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
   const isEmployee = user?.role === 'Member';
 
-  // Listen to tasks & members in real-time
+  // Read tasks in real-time
   useEffect(() => {
     setLoading(true);
-    const unsubscribeTasks = dbService.subscribeTasks((fetchedTasks) => {
+    const unsubscribe = dbService.subscribeTasks((fetchedTasks) => {
       setTasks(fetchedTasks);
       setLoading(false);
     });
 
-    const unsubscribeMembers = dbService.subscribeMembers((fetchedMembers) => {
-      setMembers(fetchedMembers);
-    });
+    dbService.getMembers().then(setMembers);
 
-    return () => {
-      unsubscribeTasks();
-      unsubscribeMembers();
-    };
+    return () => unsubscribe();
   }, []);
+
+  // Compute Unique Projects list for the filter
+  const projectsList = useMemo(() => {
+    const list = new Set<string>();
+    tasks.forEach(t => {
+      if (t.projectName) list.add(t.projectName);
+    });
+    return Array.from(list);
+  }, [tasks]);
 
   // Handle scroll position tracking
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -90,19 +96,11 @@ export default function KanbanPage() {
     setMaxScrollPosition(maxScroll);
   };
 
-  const projectList = useMemo(() => {
-    const list = new Set<string>();
-    tasks.forEach(t => {
-      if (t.projectName) list.add(t.projectName);
-    });
-    return Array.from(list);
-  }, [tasks]);
-
   // Derived Filtered Tasks
   const filteredTasks = useMemo(() => {
     return tasks.filter(task => {
       // Access Control: Employee can ONLY view their own assigned tasks
-      if (isEmployee && task.assigneeId.toLowerCase() !== user?.email.toLowerCase()) {
+      if (isEmployee && !isUserAssignedToTask(task, user?.email)) {
         return false;
       }
 
@@ -111,7 +109,7 @@ export default function KanbanPage() {
         const matchId = task.taskId?.toLowerCase().includes(q);
         const matchTitle = task.title?.toLowerCase().includes(q);
         const matchDesc = task.description?.toLowerCase().includes(q);
-        const matchUser = task.assigneeName?.toLowerCase().includes(q);
+        const matchUser = getTaskAssignees(task).some(a => a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
         const matchProject = task.projectName?.toLowerCase().includes(q);
         if (!matchId && !matchTitle && !matchDesc && !matchUser && !matchProject) {
           return false;
@@ -121,7 +119,7 @@ export default function KanbanPage() {
       if (selectedProject !== 'all' && task.projectName.toLowerCase() !== selectedProject.toLowerCase()) {
         return false;
       }
-      if (selectedEmployee !== 'all' && task.assigneeId.toLowerCase() !== selectedEmployee.toLowerCase()) {
+      if (selectedEmployee !== 'all' && !getTaskAssigneeIds(task).includes(selectedEmployee.toLowerCase())) {
         return false;
       }
       if (selectedPriority !== 'all' && task.priority.toLowerCase() !== selectedPriority.toLowerCase()) {
@@ -154,7 +152,7 @@ export default function KanbanPage() {
     if (task.status === status) return;
 
     // Check Employee rule: employee can only update status of their OWN assigned tasks
-    if (isEmployee && task.assigneeId.toLowerCase() !== user?.email.toLowerCase()) {
+    if (isEmployee && !isUserAssignedToTask(task, user?.email)) {
       toast.error('Permission Denied: Employees can only move tasks assigned to themselves.');
       return;
     }
@@ -174,16 +172,15 @@ export default function KanbanPage() {
       return;
     }
 
-    const headers = ['Task ID', 'Project', 'Title', 'Priority', 'Status', 'Assignee', 'Due Date', 'Created By'];
+    const headers = ['Task ID', 'Title', 'Project', 'Assigned To', 'Priority', 'Status', 'Due Date'];
     const rows = filteredTasks.map(t => [
       t.taskId,
-      `"${t.projectName.replace(/"/g, '""')}"`,
       `"${t.title.replace(/"/g, '""')}"`,
+      `"${t.projectName.replace(/"/g, '""')}"`,
+      `"${getTaskAssigneeNames(t).replace(/"/g, '""')}"`,
       t.priority.toUpperCase(),
       t.status.toUpperCase(),
-      t.assigneeName,
-      formatDate(t.expectedCompletionDate),
-      t.createdBy
+      formatDate(t.expectedCompletionDate)
     ]);
 
     const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
@@ -248,8 +245,8 @@ export default function KanbanPage() {
           className="bg-background/60 border border-card-border rounded-xl py-2 px-3.5 text-xs font-medium text-foreground cursor-pointer focus:outline-none"
         >
           <option value="all">All Projects</option>
-          {projectList.map(proj => (
-            <option key={proj} value={proj}>{proj}</option>
+          {projectsList.filter(Boolean).map((proj, idx) => (
+            <option key={proj || `proj-${idx}`} value={proj}>{proj}</option>
           ))}
         </select>
 
@@ -260,8 +257,8 @@ export default function KanbanPage() {
             className="bg-background/60 border border-card-border rounded-xl py-2 px-3.5 text-xs font-medium text-foreground cursor-pointer focus:outline-none"
           >
             <option value="all">All Assignees</option>
-            {members.map(m => (
-              <option key={m.id} value={m.email}>{m.name}</option>
+            {members.filter(m => Boolean(m.id || m.email)).map((m, idx) => (
+              <option key={m.id || m.email || `m-${idx}`} value={m.email}>{m.name}</option>
             ))}
           </select>
         )}
@@ -312,9 +309,9 @@ export default function KanbanPage() {
                   {/* Cards Container */}
                   <div className="flex-1 overflow-y-auto space-y-3 pr-0.5">
                     {colTasks.length > 0 ? (
-                      colTasks.map(task => (
+                      colTasks.map((task, tIdx) => (
                         <div
-                          key={task.id}
+                          key={task.id || task.taskId || `task-${tIdx}`}
                           draggable
                           onDragStart={(e) => handleDragStart(e, task.id!)}
                           onClick={() => {
@@ -338,16 +335,26 @@ export default function KanbanPage() {
 
                           {/* Info Footer */}
                           <div className="flex justify-between items-center pt-2.5 border-t border-border/20">
-                            {/* Assignee Avatar */}
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <div 
-                                className="w-5.5 h-5.5 rounded-full flex items-center justify-center font-bold text-white text-[8px] shrink-0 shadow-inner"
-                                style={{ backgroundColor: task.assigneeColor || '#3b82f6' }}
-                              >
-                                {task.assigneeName.charAt(0).toUpperCase()}
-                              </div>
-                              <span className="text-[9px] text-muted-foreground font-semibold truncate">
-                                {task.assigneeName.split(' ')[0]}
+                            {/* Multi-Assignee Avatars */}
+                            <div className="flex items-center min-w-0" title={getTaskAssigneeNames(task)}>
+                              {getTaskAssignees(task).slice(0, 3).map((assignee, idx) => (
+                                <div 
+                                  key={assignee.id || `assignee-${idx}`}
+                                  className={`w-5.5 h-5.5 rounded-full flex items-center justify-center font-bold text-white text-[8px] shrink-0 shadow-inner border border-card ${
+                                    idx > 0 ? '-ml-2' : ''
+                                  }`}
+                                  style={{ backgroundColor: assignee.color || '#3b82f6' }}
+                                >
+                                  {assignee.name.charAt(0).toUpperCase()}
+                                </div>
+                              ))}
+                              {getTaskAssignees(task).length > 3 && (
+                                <div className="w-5.5 h-5.5 -ml-2 rounded-full flex items-center justify-center font-bold text-[8px] bg-slate-800 text-muted-foreground border border-card shrink-0 shadow-inner">
+                                  +{getTaskAssignees(task).length - 3}
+                                </div>
+                              )}
+                              <span className="text-[9px] text-muted-foreground font-semibold truncate ml-1.5 max-w-[75px]">
+                                {getTaskAssignees(task)[0]?.name.split(' ')[0] || 'Unassigned'}
                               </span>
                             </div>
                             
@@ -416,6 +423,11 @@ export default function KanbanPage() {
             setIsDetailOpen(false);
           }}
           task={selectedTask}
+          onEditClick={(task) => {
+            setTaskToEdit(task);
+            setIsDetailOpen(false);
+            setIsEditOpen(true);
+          }}
         />
       )}
 
@@ -424,6 +436,20 @@ export default function KanbanPage() {
         isOpen={createOpen}
         onClose={() => setCreateOpen(false)}
         onSuccess={() => {}}
+      />
+
+      {/* Task Edit Dialog */}
+      <CreateTaskDialog
+        isOpen={isEditOpen}
+        onClose={() => {
+          setIsEditOpen(false);
+          setTaskToEdit(undefined);
+        }}
+        taskToEdit={taskToEdit}
+        onSuccess={() => {
+          setIsEditOpen(false);
+          setTaskToEdit(undefined);
+        }}
       />
 
       {/* Floating Create Task Button - Fixed to viewport */}

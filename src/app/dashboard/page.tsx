@@ -33,7 +33,7 @@ import {
   Award
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { formatDate } from '@/utils';
+import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { isFirebaseConfigured } from '@/firebase/config';
@@ -150,7 +150,7 @@ export default function DashboardHome() {
         const matchId = task.taskId?.toLowerCase().includes(q);
         const matchTitle = task.title?.toLowerCase().includes(q);
         const matchProject = task.projectName?.toLowerCase().includes(q);
-        const matchAssignee = task.assigneeName?.toLowerCase().includes(q);
+        const matchAssignee = getTaskAssignees(task).some(a => a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q));
         if (!matchId && !matchTitle && !matchProject && !matchAssignee) {
           return false;
         }
@@ -160,7 +160,7 @@ export default function DashboardHome() {
       if (filterProject !== 'all' && task.projectName.toLowerCase() !== filterProject.toLowerCase()) {
         return false;
       }
-      if (filterEmployee !== 'all' && task.assigneeId.toLowerCase() !== filterEmployee.toLowerCase()) {
+      if (filterEmployee !== 'all' && !getTaskAssigneeIds(task).includes(filterEmployee.toLowerCase())) {
         return false;
       }
       if (filterPriority !== 'all' && task.priority.toLowerCase() !== filterPriority.toLowerCase()) {
@@ -345,8 +345,8 @@ export default function DashboardHome() {
   // 7. Employee Capacity & Workloads List
   const teamActivityList = useMemo(() => {
     return members.map(member => {
-      // Find tasks assigned to this member
-      const memberAllTasks = tasks.filter(t => t.assigneeId.toLowerCase() === member.email.toLowerCase());
+      // Find tasks assigned to this member (supports multi-assignees)
+      const memberAllTasks = tasks.filter(t => isUserAssignedToTask(t, member.email));
       const active = memberAllTasks.filter(t => t.status !== 'completed' && t.status !== 'moved-to-live' && t.status !== 'cancelled');
       const completed = memberAllTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live');
 
@@ -567,7 +567,7 @@ export default function DashboardHome() {
                 `"${t.title.replace(/"/g, '""')}"`,
                 t.priority.toUpperCase(),
                 t.status.toUpperCase(),
-                t.assigneeName,
+                `"${getTaskAssigneeNames(t).replace(/"/g, '""')}"`,
                 formatDate(t.expectedCompletionDate)
               ]);
               const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
@@ -639,8 +639,8 @@ export default function DashboardHome() {
               className="w-full bg-background/60 border border-card-border rounded-lg py-1.5 px-2.5 text-xs font-medium focus:outline-none text-foreground cursor-pointer"
             >
               <option value="all">All Projects</option>
-              {projectList.map(proj => (
-                <option key={proj} value={proj}>{proj}</option>
+              {projectList.filter(Boolean).map((proj, idx) => (
+                <option key={proj || `proj-${idx}`} value={proj}>{proj}</option>
               ))}
             </select>
           </div>
@@ -654,8 +654,8 @@ export default function DashboardHome() {
               className="w-full bg-background/60 border border-card-border rounded-lg py-1.5 px-2.5 text-xs font-medium focus:outline-none text-foreground cursor-pointer"
             >
               <option value="all">All Employees</option>
-              {members.map(m => (
-                <option key={m.id} value={m.email}>{m.name}</option>
+              {members.filter(m => Boolean(m.id || m.email)).map((m, idx) => (
+                <option key={m.id || m.email || `m-${idx}`} value={m.email}>{m.name}</option>
               ))}
             </select>
           </div>
@@ -1048,7 +1048,7 @@ export default function DashboardHome() {
                         <span className="font-bold font-mono text-[9px] text-muted-foreground mr-1.5">{t.taskId}</span>
                         <span className="font-extrabold text-foreground truncate">{t.title}</span>
                       </div>
-                      <span className="text-[9px] text-emerald-500 font-bold shrink-0">{t.assigneeName.split(' ')[0]}</span>
+                      <span className="text-[9px] text-emerald-500 font-bold shrink-0">{getTaskAssignees(t)[0]?.name.split(' ')[0] || 'Unassigned'}</span>
                     </div>
                   ))
                 ) : (
@@ -1075,7 +1075,7 @@ export default function DashboardHome() {
                         <span className="font-bold font-mono text-[9px] text-red-500 mr-1.5">{t.taskId}</span>
                         <span className="font-extrabold text-foreground truncate">{t.title}</span>
                       </div>
-                      <span className="text-[9px] text-red-500 font-bold shrink-0">{t.assigneeName.split(' ')[0]}</span>
+                      <span className="text-[9px] text-red-500 font-bold shrink-0">{getTaskAssignees(t)[0]?.name.split(' ')[0] || 'Unassigned'}</span>
                     </div>
                   ))
                 ) : (
@@ -1115,7 +1115,7 @@ export default function DashboardHome() {
                     </div>
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between text-[9px] font-bold text-muted-foreground">
-                      <span>{t.assigneeName}</span>
+                      <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
                       <span>Hours Left: <strong className="text-foreground">{t.estimatedHours || 0}h</strong></span>
                     </div>
                   </div>
@@ -1151,7 +1151,7 @@ export default function DashboardHome() {
                     </div>
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between items-center text-[9px] font-bold text-muted-foreground pt-1.5 border-t border-red-500/5">
-                      <span>{t.assigneeName}</span>
+                      <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
                       <PriorityBadge priority={t.priority} className="text-[8px]" />
                     </div>
                   </div>
@@ -1184,7 +1184,7 @@ export default function DashboardHome() {
                     </div>
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between items-center text-[9px] font-bold text-muted-foreground">
-                      <span>{t.assigneeName}</span>
+                      <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
                       <span>Due: {formatDate(t.expectedCompletionDate)}</span>
                     </div>
                   </div>
@@ -1212,9 +1212,9 @@ export default function DashboardHome() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {teamActivityList.map((act) => (
+          {teamActivityList.map((act, idx) => (
             <motion.div
-              key={act.member.id}
+              key={act.member.id || act.member.email || `act-${idx}`}
               onClick={() => {
                 setSelectedMember(act.member);
                 setIsMemberDrawerOpen(true);

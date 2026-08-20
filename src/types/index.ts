@@ -22,6 +22,7 @@ export interface Member {
   role: UserRole;
   avatarColor: string; // e.g. '#3b82f6'
   password?: string;
+  isActive?: boolean;
   createdDate: string; // ISO String
 }
 
@@ -59,15 +60,23 @@ export interface Subtask {
   completedDate?: string; // ISO String
 }
 
+export interface TaskAssignee {
+  id: string; // Email
+  name: string; // Display Name
+  color: string; // Avatar Color (e.g. '#6366f1')
+}
+
 export interface Task {
   id?: string;
   taskId: string; // Auto-generated e.g. TASK-000001
   projectName: string;
   title: string;
   description: string;
-  assigneeId: string; // Email
-  assigneeName: string;
-  assigneeColor: string;
+  assignees?: TaskAssignee[]; // Multi-assignees list (Authoritative)
+  assigneeIds?: string[]; // Multi-assignees email list for fast membership checks
+  assigneeId?: string; // Legacy fallback single email
+  assigneeName?: string; // Legacy fallback single display name
+  assigneeColor?: string; // Legacy fallback avatar color
   priority: TaskPriority;
   status: TaskStatus;
   module: string;

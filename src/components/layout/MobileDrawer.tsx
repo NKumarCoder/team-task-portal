@@ -14,9 +14,10 @@ export default function MobileDrawer({ isOpen, onClose }: MobileDrawerProps) {
   return (
     <AnimatePresence>
       {isOpen && (
-        <>
+        <div key="mobile-drawer-root">
           {/* Backdrop Overlay */}
           <motion.div
+            key="mobile-drawer-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.4 }}
             exit={{ opacity: 0 }}
@@ -26,6 +27,7 @@ export default function MobileDrawer({ isOpen, onClose }: MobileDrawerProps) {
 
           {/* Sliding Panel */}
           <motion.div
+            key="mobile-drawer-panel"
             initial={{ x: '-100%' }}
             animate={{ x: 0 }}
             exit={{ x: '-100%' }}
@@ -42,7 +44,7 @@ export default function MobileDrawer({ isOpen, onClose }: MobileDrawerProps) {
             
             <Sidebar className="h-full border-r-0 rounded-none shadow-2xl" onClose={onClose} />
           </motion.div>
-        </>
+        </div>
       )}
     </AnimatePresence>
   );

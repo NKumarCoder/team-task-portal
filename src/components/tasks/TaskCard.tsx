@@ -5,7 +5,7 @@ import { Task } from '@/types';
 import PriorityBadge from './PriorityBadge';
 import StatusBadge from './StatusBadge';
 import { Calendar, User, Clock, ChevronRight } from 'lucide-react';
-import { formatDate } from '@/utils';
+import { formatDate, getTaskAssignees } from '@/utils';
 import { motion } from 'framer-motion';
 
 interface TaskCardProps {
@@ -14,6 +14,11 @@ interface TaskCardProps {
 }
 
 export default function TaskCard({ task, onClick }: TaskCardProps) {
+  const assignees = getTaskAssignees(task);
+  const visibleAssignees = assignees.slice(0, 3);
+  const remainingCount = assignees.length - 3;
+  const allNames = assignees.map((a) => a.name).join(', ') || 'Unassigned';
+
   return (
     <motion.div
       whileHover={{ y: -4 }}
@@ -64,15 +69,27 @@ export default function TaskCard({ task, onClick }: TaskCardProps) {
           <span className="font-bold text-foreground">{formatDate(task.expectedCompletionDate)}</span>
         </div>
 
-        {/* Assignee Avatar */}
-        <div className="flex items-center gap-1.5">
-          <div 
-            className="w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[10px] shadow-inner"
-            style={{ backgroundColor: task.assigneeColor }}
-            title={task.assigneeName}
-          >
-            {task.assigneeName.charAt(0).toUpperCase()}
-          </div>
+        {/* Multi-Assignee Avatar Cluster */}
+        <div className="flex items-center" title={allNames}>
+          {visibleAssignees.map((assignee, index) => (
+            <div 
+              key={assignee.id || `assignee-${index}`}
+              className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[10px] shadow-sm border border-background shrink-0 ${
+                index > 0 ? '-ml-2' : ''
+              }`}
+              style={{ backgroundColor: assignee.color || '#6366f1' }}
+            >
+              {assignee.name.charAt(0).toUpperCase()}
+            </div>
+          ))}
+          {remainingCount > 0 && (
+            <div className="w-6 h-6 -ml-2 rounded-full flex items-center justify-center font-bold text-[9px] bg-slate-800 text-muted-foreground border border-background shrink-0 shadow-sm">
+              +{remainingCount}
+            </div>
+          )}
+          {assignees.length === 0 && (
+            <span className="text-[11px] text-muted-foreground">Unassigned</span>
+          )}
         </div>
       </div>
     </motion.div>

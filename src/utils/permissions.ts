@@ -3,7 +3,8 @@
  * Three roles: SuperAdmin, Admin, Member
  */
 
-import { UserRole } from '../types';
+import { UserRole, Task } from '../types';
+import { isUserAssignedToTask } from './index';
 
 export interface Permissions {
   // Task permissions
@@ -149,4 +150,37 @@ export function hasPermission(role: UserRole, action: keyof Permissions): boolea
  */
 export function isSuperAdminEmail(email: string): boolean {
   return email.toLowerCase() === 'nm@i2space.com';
+}
+
+/**
+ * Check if a user can add a co-assignee to a task
+ * Returns true for:
+ * - SuperAdmin
+ * - Admin
+ * - Task Creator
+ * - Any currently assigned member
+ */
+export function canAddCoAssignee(
+  task: Task | null | undefined,
+  user: { email?: string | null; role?: UserRole } | null | undefined
+): boolean {
+  if (!task || !user || !user.email) return false;
+
+  if (user.role === 'SuperAdmin' || user.role === 'Admin') {
+    return true;
+  }
+
+  const userEmail = user.email.toLowerCase();
+
+  // Task creator
+  if (task.createdBy && task.createdBy.toLowerCase() === userEmail) {
+    return true;
+  }
+
+  // Any currently assigned member / co-assignee
+  if (isUserAssignedToTask(task, userEmail)) {
+    return true;
+  }
+
+  return false;
 }
