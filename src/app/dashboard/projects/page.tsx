@@ -89,9 +89,9 @@ export default function ProjectsPage() {
   const getProjectStats = (projectName: string) => {
     const projectTasks = tasks.filter(t => t.projectName.toLowerCase() === projectName.toLowerCase());
     const total = projectTasks.length;
-    const completed = projectTasks.filter(t => ['completed', 'deployed', 'moved-to-live'].includes(t.status)).length;
-    const inProgress = projectTasks.filter(t => ['in-progress', 'supplier-pending', 'development-completed', 'code-review', 'testing', 'uat'].includes(t.status)).length;
-    const blocked = projectTasks.filter(t => t.status === 'blocked').length;
+    const completed = projectTasks.filter(t => ['completed', 'prod-deployed', 'deployed', 'moved-to-live'].includes(t.status)).length;
+    const inProgress = projectTasks.filter(t => ['in-progress', 'supplier-pending', 'code-review', 'uat-deployed', 'uat-testing', 'ready-for-production-deploy', 'development-completed', 'testing', 'uat'].includes(t.status)).length;
+    const blocked = projectTasks.filter(t => ['blocked', 'uat-rejected'].includes(t.status)).length;
     const pending = total - completed - inProgress - blocked;
     
     const progress = total > 0 ? Math.round((completed / total) * 100) : 0;

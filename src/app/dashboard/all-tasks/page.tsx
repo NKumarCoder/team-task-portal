@@ -942,17 +942,13 @@ export default function AllTasksPage() {
                         <option value="assigned">Assigned</option>
                         <option value="in-progress">In Progress</option>
                         <option value="supplier-pending">Supplier Pending</option>
-                        <option value="development-completed">Dev Completed</option>
                         <option value="code-review">Code Review</option>
-                        <option value="testing">Testing</option>
-                        <option value="uat">UAT</option>
-                        <option value="ready-for-deployment">Ready for Deploy</option>
-                        <option value="deployed">Deployed</option>
-                        <option value="moved-to-live">Moved to Live</option>
+                        <option value="uat-deployed">UAT Deployed</option>
+                        <option value="uat-testing">UAT Testing</option>
+                        <option value="uat-rejected">UAT Rejected</option>
+                        <option value="ready-for-production-deploy">Ready for Production Deploy</option>
+                        <option value="prod-deployed">Prod Deployed</option>
                         <option value="completed">Completed</option>
-                        <option value="blocked">Blocked</option>
-                        <option value="on-hold">On Hold</option>
-                        <option value="cancelled">Cancelled</option>
                       </select>
                     </div>
 

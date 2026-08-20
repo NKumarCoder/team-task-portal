@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
+  Plus,
   Calendar,
   User,
   UserPlus,
@@ -27,9 +28,11 @@ import {
   CheckSquare,
   Square
 } from 'lucide-react';
-import { Task, ActivityLog, Member, Subtask } from '@/types';
+import { Task, ActivityLog, Member, Subtask, TaskStatus } from '@/types';
 import PriorityBadge from './PriorityBadge';
 import StatusBadge from './StatusBadge';
+import StatusUpdateModal from './StatusUpdateModal';
+import { ACTIVE_TASK_STATUS_LIST, TASK_STATUS_CONFIG } from '@/constants';
 import { formatDate, formatTimeAgo, getTaskAssignees, isUserAssignedToTask } from '@/utils';
 import { canAddCoAssignee } from '@/utils/permissions';
 import AddCoAssigneePopover from '@/components/ui/AddCoAssigneePopover';
@@ -40,17 +43,15 @@ import toast from 'react-hot-toast';
 // Activity meta helper - moved outside component
 const getActivityMeta = (action: string) => {
   const act = action.toLowerCase();
-  if (act.includes('co-assignee')) return { icon: UserPlus, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
-  if (act.includes('created')) return { icon: Sparkles, color: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30' };
-  if (act.includes('assigned') || act.includes('reassigned')) return { icon: User, color: 'text-blue-400 bg-blue-500/20 border-blue-500/30' };
+  if (act.includes('created')) return { icon: Plus, color: 'text-blue-400 bg-blue-500/20 border-blue-500/30' };
+  if (act.includes('co-assignee') || act.includes('delegate')) return { icon: UserPlus, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
+  if (act.includes('assigned')) return { icon: User, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
+  if (act.includes('uat rejected') || act.includes('rejected')) return { icon: AlertCircle, color: 'text-rose-400 bg-rose-500/20 border-rose-500/30' };
   if (act.includes('priority')) return { icon: AlertTriangle, color: 'text-orange-400 bg-orange-500/20 border-orange-500/30' };
-  if (act.includes('due date') || act.includes('deadline')) return { icon: Calendar, color: 'text-violet-400 bg-violet-500/20 border-violet-500/30' };
-  if (act.includes('description')) return { icon: FileText, color: 'text-indigo-400 bg-indigo-500/20 border-indigo-500/30' };
-  if (act.includes('remarks')) return { icon: Edit3, color: 'text-amber-400 bg-amber-500/20 border-amber-500/30' };
   if (act.includes('deleted')) return { icon: Trash2, color: 'text-red-400 bg-red-500/20 border-red-500/30' };
   if (act.includes('restored')) return { icon: History, color: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30' };
   if (act.includes('completed')) return { icon: CheckSquare, color: 'text-emerald-400 bg-emerald-500/20 border-emerald-500/30' };
-  if (act.includes('live')) return { icon: Sparkles, color: 'text-cyan-400 bg-cyan-500/20 border-cyan-500/30' };
+  if (act.includes('live') || act.includes('deployed')) return { icon: Sparkles, color: 'text-cyan-400 bg-cyan-500/20 border-cyan-500/30' };
   if (act.includes('testing')) return { icon: Clock, color: 'text-purple-400 bg-purple-500/20 border-purple-500/30' };
   if (act.includes('code review')) return { icon: Lock, color: 'text-amber-400 bg-amber-500/20 border-amber-500/30' };
   return { icon: Activity, color: 'text-gray-400 bg-gray-500/20 border-gray-500/30' };
@@ -73,12 +74,40 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
   const [isAddCoAssigneeOpen, setIsAddCoAssigneeOpen] = useState(false);
 
+  // Status Change Modal State
+  const [statusModalTarget, setStatusModalTarget] = useState<TaskStatus | null>(null);
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+
   // Refs
   const activitiesEndRef = useRef<HTMLDivElement>(null);
 
   const isEmployee = user?.role === 'Member';
   const isManager = user?.role === 'Admin' || user?.role === 'SuperAdmin';
   const userCanAddCoAssignee = canAddCoAssignee(task, user);
+  const canChangeStatus = isManager || (isEmployee && isUserAssignedToTask(task, user?.email));
+
+  const handleSelectStatus = async (newStatus: TaskStatus) => {
+    if (!task || newStatus === task.status) return;
+    
+    if (newStatus === 'uat-rejected') {
+      setStatusModalTarget(newStatus);
+      setIsStatusModalOpen(true);
+      return;
+    }
+
+    try {
+      await dbService.updateTask(task.id!, { status: newStatus }, user?.email || '', user?.displayName || '');
+      toast.success(`Status updated to ${TASK_STATUS_CONFIG[newStatus]?.label || newStatus}`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to update status');
+    }
+  };
+
+  const handleConfirmStatusChange = async (targetStatus: TaskStatus, comment: string) => {
+    if (!task?.id) return;
+    await dbService.updateTask(task.id, { status: targetStatus }, user?.email || '', user?.displayName || '', comment);
+    toast.success(`Status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
+  };
 
   // Real-time task sync
   useEffect(() => {
@@ -262,7 +291,22 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                 {/* Status & Priority */}
                 <div className="grid grid-cols-2 gap-4 bg-slate-900 p-4 rounded-xl border border-slate-800">
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">Status</span>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Status</span>
+                      {canChangeStatus && (
+                        <select
+                          value={task.status}
+                          onChange={(e) => handleSelectStatus(e.target.value as TaskStatus)}
+                          className="text-[10px] bg-slate-800/90 text-primary border border-slate-700 rounded-md px-1.5 py-0.5 outline-none cursor-pointer hover:border-primary/50 transition-colors"
+                        >
+                          {ACTIVE_TASK_STATUS_LIST.map((st) => (
+                            <option key={st} value={st}>
+                              {TASK_STATUS_CONFIG[st]?.label || st}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
                     <StatusBadge status={task.status} />
                   </div>
                   <div>
@@ -270,6 +314,22 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                     <PriorityBadge priority={task.priority} />
                   </div>
                 </div>
+
+                {/* UAT Rejection Reason Banner (if UAT Rejected) */}
+                {task.status === 'uat-rejected' && (
+                  <div className="bg-rose-950/40 border border-rose-800/60 rounded-xl p-4 space-y-2 shadow-inner">
+                    <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+                      <span className="uppercase tracking-wider text-[10px]">UAT Rejection Reason</span>
+                    </div>
+                    <p className="text-xs text-rose-200 leading-relaxed whitespace-pre-wrap pl-6 font-medium">
+                      {task.latestRejectionReason || 
+                       (task.statusHistory && [...task.statusHistory].reverse().find(h => h.status === 'uat-rejected')?.comment) || 
+                       task.remarks || 
+                       'No rejection reason recorded.'}
+                    </p>
+                  </div>
+                )}
 
                 {/* Task Details */}
                 <div className="space-y-4">
@@ -604,6 +664,21 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
         onSuccess={(updatedTask) => {
           setTask(updatedTask);
         }}
+      />
+    )}
+
+    {/* Status Update & UAT Rejection Modal */}
+    {task && (
+      <StatusUpdateModal
+        key="task-detail-status-modal"
+        isOpen={isStatusModalOpen}
+        onClose={() => {
+          setIsStatusModalOpen(false);
+          setStatusModalTarget(null);
+        }}
+        task={task}
+        targetStatus={statusModalTarget}
+        onConfirm={handleConfirmStatusChange}
       />
     )}
   </>

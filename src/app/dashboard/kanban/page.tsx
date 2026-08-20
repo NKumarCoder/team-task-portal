@@ -24,21 +24,20 @@ import PriorityBadge from '@/components/tasks/PriorityBadge';
 import StatusBadge from '@/components/tasks/StatusBadge';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
+import StatusUpdateModal from '@/components/tasks/StatusUpdateModal';
+import { ACTIVE_TASK_STATUS_LIST, TASK_STATUS_CONFIG } from '@/constants';
 import toast from 'react-hot-toast';
 
-const COLUMNS: { id: TaskStatus; label: string; bg: string; border: string; text: string }[] = [
-  { id: 'assigned', label: 'Assigned', bg: 'bg-zinc-500/5', border: 'border-zinc-500/10', text: 'text-zinc-400' },
-  { id: 'in-progress', label: 'In Progress', bg: 'bg-blue-500/5', border: 'border-blue-500/10', text: 'text-blue-400' },
-  { id: 'supplier-pending', label: 'Supplier Pending', bg: 'bg-amber-500/5', border: 'border-amber-500/10', text: 'text-amber-400' },
-  { id: 'development-completed', label: 'Dev Done', bg: 'bg-indigo-500/5', border: 'border-indigo-500/10', text: 'text-indigo-400' },
-  { id: 'code-review', label: 'Code Review', bg: 'bg-orange-500/5', border: 'border-orange-500/10', text: 'text-orange-400' },
-  { id: 'testing', label: 'Testing', bg: 'bg-purple-500/5', border: 'border-purple-500/10', text: 'text-purple-400' },
-  { id: 'uat', label: 'UAT', bg: 'bg-violet-500/5', border: 'border-violet-500/10', text: 'text-violet-400' },
-  { id: 'ready-for-deployment', label: 'Ready for Deploy', bg: 'bg-teal-500/5', border: 'border-teal-500/10', text: 'text-teal-400' },
-  { id: 'deployed', label: 'Deployed', bg: 'bg-cyan-500/5', border: 'border-cyan-500/10', text: 'text-cyan-400' },
-  { id: 'moved-to-live', label: 'Moved to Live', bg: 'bg-emerald-500/5', border: 'border-emerald-500/10', text: 'text-emerald-400' },
-  { id: 'completed', label: 'Completed', bg: 'bg-green-500/5', border: 'border-green-500/10', text: 'text-green-400' }
-];
+const COLUMNS: { id: TaskStatus; label: string; bg: string; border: string; text: string }[] = ACTIVE_TASK_STATUS_LIST.map(status => {
+  const conf = TASK_STATUS_CONFIG[status];
+  return {
+    id: status,
+    label: conf.label,
+    bg: conf.kanbanBg,
+    border: conf.kanbanBorder,
+    text: conf.kanbanText,
+  };
+});
 
 export default function KanbanPage() {
   const { user } = useAuth();
@@ -58,6 +57,11 @@ export default function KanbanPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [taskToEdit, setTaskToEdit] = useState<Task | undefined>(undefined);
   const [isEditOpen, setIsEditOpen] = useState(false);
+
+  // Status Change / Rejection Modal State
+  const [statusModalTask, setStatusModalTask] = useState<Task | null>(null);
+  const [statusModalTarget, setStatusModalTarget] = useState<TaskStatus | null>(null);
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const [scrollPosition, setScrollPosition] = useState(0);
   const [maxScrollPosition, setMaxScrollPosition] = useState(0);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
@@ -157,12 +161,32 @@ export default function KanbanPage() {
       return;
     }
 
+    // If moving to UAT Rejected, mandatory rejection reason modal is required
+    if (status === 'uat-rejected') {
+      setStatusModalTask(task);
+      setStatusModalTarget(status);
+      setIsStatusModalOpen(true);
+      return;
+    }
+
     try {
       await dbService.updateTask(taskId, { status }, user?.email || '', user?.displayName || '');
-      toast.success(`Task status updated to ${status.replace('-', ' ')}`);
+      toast.success(`Task status updated to ${TASK_STATUS_CONFIG[status]?.label || status}`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update status');
     }
+  };
+
+  const handleConfirmStatusChange = async (targetStatus: TaskStatus, comment: string) => {
+    if (!statusModalTask?.id) return;
+    await dbService.updateTask(
+      statusModalTask.id,
+      { status: targetStatus },
+      user?.email || '',
+      user?.displayName || '',
+      comment
+    );
+    toast.success(`Task status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
   };
 
   // Exporter: client-side CSV downloader
@@ -451,6 +475,21 @@ export default function KanbanPage() {
           setTaskToEdit(undefined);
         }}
       />
+
+      {/* Status Update / UAT Rejection Modal */}
+      {statusModalTask && (
+        <StatusUpdateModal
+          isOpen={isStatusModalOpen}
+          onClose={() => {
+            setIsStatusModalOpen(false);
+            setStatusModalTask(null);
+            setStatusModalTarget(null);
+          }}
+          task={statusModalTask}
+          targetStatus={statusModalTarget}
+          onConfirm={handleConfirmStatusChange}
+        />
+      )}
 
       {/* Floating Create Task Button - Fixed to viewport */}
       <button

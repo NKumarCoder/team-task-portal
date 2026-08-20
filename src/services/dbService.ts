@@ -25,7 +25,7 @@ import {
   activitiesCollection,
   projectsCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee } from '../types';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee } from '../types';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '../utils';
 import { MAX_ASSIGNEES } from '../constants';
 
@@ -343,7 +343,7 @@ class DBService {
     return null;
   }
 
-  async updateTask(id: string, updates: Partial<Task>, userEmail?: string, userName?: string): Promise<void> {
+  async updateTask(id: string, updates: Partial<Task>, userEmail?: string, userName?: string, statusComment?: string): Promise<void> {
     console.log("[dbService] Updating task:", id);
     const start = performance.now();
 
@@ -352,19 +352,43 @@ class DBService {
     const original = allTasks.find(t => t.id === id);
     if (!original) return;
 
-    // Check Dependency Block when marking completed
-    if (updates.status === 'completed' || updates.status === 'moved-to-live' || updates.status === 'deployed') {
+    // Check Dependency Block when marking completed / live / deployed
+    if (updates.status === 'completed' || updates.status === 'prod-deployed' || updates.status === 'moved-to-live' || updates.status === 'deployed') {
       const blockedBy = await this.checkDependencyBlocked(original);
       if (blockedBy) {
         throw new Error(`Cannot complete task. Blocked by incomplete prerequisite task ${blockedBy}.`);
       }
     }
 
-    const payload = {
+    const logUser = userEmail || 'system@company.com';
+    const logUserName = userName || 'System';
+
+    // Status History & Rejection Tracking
+    const payload: any = {
       ...updates,
       updatedDate: new Date().toISOString()
     };
-    delete (payload as any).taskId;
+    delete payload.taskId;
+
+    if (updates.status && updates.status !== original.status) {
+      const historyItem: TaskStatusHistory = {
+        status: updates.status,
+        previousStatus: original.status,
+        updatedBy: logUser,
+        updatedByName: logUserName,
+        updatedAt: new Date().toISOString(),
+        comment: statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '',
+        remarks: statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '',
+      };
+
+      payload.statusHistory = [...(original.statusHistory || []), historyItem];
+
+      if (updates.status === 'uat-rejected') {
+        payload.latestRejectionReason = statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '';
+      } else {
+        payload.latestRejectionReason = ''; // Clear previous rejection reason once moved to development/testing/etc.
+      }
+    }
 
     const taskDoc = doc(db, 'tasks', id);
     await updateDoc(taskDoc, payload);
@@ -376,16 +400,18 @@ class DBService {
     }
 
     // DIFF CHECKS FOR ACTIVITY LOGS
-    const logUser = userEmail || 'system@company.com';
-    const logUserName = userName || 'System';
-
     if (updates.status && updates.status !== original.status) {
       let actionLabel = 'Status Changed';
-      if (updates.status === 'completed') actionLabel = 'Task Completed';
-      else if (updates.status === 'moved-to-live') actionLabel = 'Moved to Live';
-      else if (updates.status === 'deployed') actionLabel = 'Deployment Completed';
-      else if (updates.status === 'testing') actionLabel = 'Testing Started';
+      if (updates.status === 'uat-rejected') actionLabel = 'UAT Rejected';
+      else if (updates.status === 'completed') actionLabel = 'Task Completed';
+      else if (updates.status === 'prod-deployed') actionLabel = 'Production Deployed';
+      else if (updates.status === 'ready-for-production-deploy') actionLabel = 'Ready for Production Deploy';
+      else if (updates.status === 'uat-testing') actionLabel = 'UAT Testing Started';
+      else if (updates.status === 'uat-deployed') actionLabel = 'UAT Deployed';
       else if (updates.status === 'code-review') actionLabel = 'Code Review Started';
+      else if (updates.status === 'supplier-pending') actionLabel = 'Supplier Pending';
+      else if (updates.status === 'in-progress') actionLabel = 'In Progress Started';
+      else if (updates.status === 'assigned') actionLabel = 'Task Assigned';
 
       await this.logActivity({
         taskId: id,
@@ -394,8 +420,8 @@ class DBService {
         user: logUser,
         userName: logUserName,
         action: actionLabel,
-        oldValue: original.status.replace('-', ' '),
-        newValue: updates.status.replace('-', ' '),
+        oldValue: original.status.replace(/-/g, ' '),
+        newValue: updates.status.replace(/-/g, ' '),
         timestamp: new Date().toISOString()
       });
 
@@ -407,14 +433,20 @@ class DBService {
         ? getTaskAssigneeNames(updates)
         : getTaskAssigneeNames(original);
 
+      const statusDisplay = updates.status.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const notifTitle = updates.status === 'uat-rejected' ? 'Task UAT Rejected' : 'Status Changed';
+      const notifMsg = updates.status === 'uat-rejected'
+        ? `${logUserName} rejected task ${original.taskId} during UAT.${statusComment ? ` Reason: "${statusComment}"` : ''}`
+        : `${logUserName} changed status of task ${original.taskId} to "${statusDisplay}".${statusComment ? ` Note: "${statusComment}"` : ''}`;
+
       for (const email of currentAssigneeIds) {
         if (email.toLowerCase() !== logUser.toLowerCase()) {
           await this.addNotification({
             userId: email,
-            title: 'Status Changed',
-            message: `${logUserName} changed status of task ${original.taskId} to "${updates.status.replace('-', ' ')}".`,
+            title: notifTitle,
+            message: notifMsg,
             taskId: id,
-            type: 'status-change',
+            type: updates.status === 'uat-rejected' ? 'uat-rejected' : 'status-change',
             read: false,
             timestamp: new Date().toISOString()
           });
@@ -448,22 +480,30 @@ class DBService {
 
           const getStatusBadgeStyle = (status: string, isNew: boolean = false): { bg: string; color: string; border: string } => {
             switch (status.toLowerCase()) {
+              case 'uat-rejected':
+                return { bg: '#fef2f2', color: '#b91c1c', border: '#fecaca' };
               case 'completed':
               case 'moved-to-live':
-              case 'deployed':
               case 'development-completed':
                 return { bg: '#ecfdf5', color: '#047857', border: '#a7f3d0' };
-              case 'in-progress':
+              case 'prod-deployed':
+              case 'deployed':
+                return { bg: '#f0fdfa', color: '#0f766e', border: '#99f6e4' };
+              case 'ready-for-production-deploy':
+              case 'ready-for-deployment':
+                return { bg: '#f5f3ff', color: '#6d28d9', border: '#ddd6fe' };
+              case 'uat-testing':
               case 'testing':
-              case 'code-review':
-                return { bg: isNew ? '#e0e7ff' : '#f1f5f9', color: isNew ? '#4338ca' : '#475569', border: isNew ? '#c7d2fe' : '#cbd5e1' };
-              case 'supplier-pending':
+                return { bg: '#f0f9ff', color: '#0369a1', border: '#bae6fd' };
+              case 'uat-deployed':
               case 'uat':
+                return { bg: '#ecfeff', color: '#0e7490', border: '#a5f3fc' };
+              case 'code-review':
+                return { bg: isNew ? '#faf5ff' : '#f1f5f9', color: isNew ? '#7e22ce' : '#475569', border: isNew ? '#e9d5ff' : '#cbd5e1' };
+              case 'supplier-pending':
                 return { bg: '#fffbeb', color: '#b45309', border: '#fde68a' };
-              case 'blocked':
-              case 'cancelled':
-                return { bg: '#fef2f2', color: '#b91c1c', border: '#fecaca' };
-              case 'on-hold':
+              case 'in-progress':
+                return { bg: isNew ? '#eef2ff' : '#f1f5f9', color: isNew ? '#4338ca' : '#475569', border: isNew ? '#c7d2fe' : '#cbd5e1' };
               case 'assigned':
               default:
                 return { bg: isNew ? '#eff6ff' : '#f1f5f9', color: isNew ? '#1d4ed8' : '#475569', border: isNew ? '#bfdbfe' : '#cbd5e1' };
@@ -475,22 +515,27 @@ class DBService {
           const prevBadge = getStatusBadgeStyle(original.status, false);
           const newBadge = getStatusBadgeStyle(updates.status, true);
 
+          // Status Comment / Rejection Reason Block
+          const effectiveComment = (statusComment || updates.remarks || '').trim();
+          const hasComment = effectiveComment && effectiveComment.toLowerCase() !== 'no remarks' && effectiveComment.toLowerCase() !== 'none';
+          const isRejectionStatus = updates.status === 'uat-rejected';
+
+          const statusCommentHtml = hasComment ? `
+            <tr>
+              <td style="padding: 0 24px 16px 24px;">
+                <div style="font-size: 10px; font-weight: 700; color: ${isRejectionStatus ? '#b91c1c' : '#64748b'}; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">
+                  ${isRejectionStatus ? 'Reason for Rejection' : 'Update Note / Remarks'}
+                </div>
+                <div style="background-color: ${isRejectionStatus ? '#fef2f2' : '#f8fafc'}; border-left: 3px solid ${isRejectionStatus ? '#ef4444' : '#4f46e5'}; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 13px; color: ${isRejectionStatus ? '#991b1b' : '#334155'}; line-height: 1.5; white-space: pre-wrap;">${effectiveComment}</div>
+              </td>
+            </tr>
+          ` : '';
+
           const descriptionHtml = original.description && original.description.trim() ? `
             <tr>
               <td style="padding: 0 24px 14px 24px;">
                 <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">Description</div>
                 <div style="background-color: #f8fafc; border-left: 3px solid #6366f1; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 13px; color: #334155; line-height: 1.5; white-space: pre-wrap;">${original.description.trim()}</div>
-              </td>
-            </tr>
-          ` : '';
-
-          const currentRemarks = (updates.remarks !== undefined ? updates.remarks : (original.remarks || '')).trim();
-          const hasRemarks = currentRemarks && currentRemarks.toLowerCase() !== 'no remarks' && currentRemarks.toLowerCase() !== 'none';
-          const remarksHtml = hasRemarks ? `
-            <tr>
-              <td style="padding: 0 24px 16px 24px;">
-                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">Remarks</div>
-                <div style="background-color: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 13px; color: #92400e; line-height: 1.5; white-space: pre-wrap;">${currentRemarks}</div>
               </td>
             </tr>
           ` : '';
@@ -514,7 +559,7 @@ class DBService {
                         
                         <!-- Top Accent Bar -->
                         <tr>
-                          <td style="height: 4px; background-color: #4f46e5;"></td>
+                          <td style="height: 4px; background-color: ${isRejectionStatus ? '#ef4444' : '#4f46e5'};"></td>
                         </tr>
 
                         <!-- Top Brand Header -->
@@ -526,7 +571,9 @@ class DBService {
                                   <span style="font-size: 14px; font-weight: 700; color: #0f172a; letter-spacing: -0.2px;">Team Task Portal</span>
                                 </td>
                                 <td align="right">
-                                  <span style="display: inline-block; font-size: 10px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.8px; background-color: #eef2ff; padding: 4px 10px; border-radius: 20px; border: 1px solid #e0e7ff;">Task Update</span>
+                                  <span style="display: inline-block; font-size: 10px; font-weight: 700; color: ${isRejectionStatus ? '#b91c1c' : '#4f46e5'}; text-transform: uppercase; letter-spacing: 0.8px; background-color: ${isRejectionStatus ? '#fef2f2' : '#eef2ff'}; padding: 4px 10px; border-radius: 20px; border: 1px solid ${isRejectionStatus ? '#fecaca' : '#e0e7ff'};">
+                                    ${isRejectionStatus ? 'UAT Rejected' : 'Task Update'}
+                                  </span>
                                 </td>
                               </tr>
                             </table>
@@ -536,9 +583,11 @@ class DBService {
                         <!-- Main Title & Task Identifier -->
                         <tr>
                           <td style="padding: 18px 24px 12px 24px;">
-                            <h1 style="margin: 0 0 4px 0; font-size: 18px; font-weight: 700; color: #0f172a; line-height: 1.3;">Task Status Updated</h1>
+                            <h1 style="margin: 0 0 4px 0; font-size: 18px; font-weight: 700; color: #0f172a; line-height: 1.3;">
+                              ${isRejectionStatus ? 'Task UAT Rejected' : 'Task Status Updated'}
+                            </h1>
                             <div style="font-size: 13px; color: #475569; font-weight: 500; line-height: 1.4;">
-                              <span style="font-family: monospace; font-weight: 700; color: #4f46e5;">${original.taskId}</span> · ${original.title}
+                              <span style="font-family: monospace; font-weight: 700; color: ${isRejectionStatus ? '#b91c1c' : '#4f46e5'};">${original.taskId}</span> · ${original.title}
                             </div>
                           </td>
                         </tr>
@@ -584,6 +633,9 @@ class DBService {
                             </table>
                           </td>
                         </tr>
+
+                        <!-- Reason / Comment Section (if entered) -->
+                        ${statusCommentHtml}
 
                         <!-- Task Details (Compact 2-Column Grid) -->
                         <tr>
@@ -637,9 +689,6 @@ class DBService {
 
                         <!-- Description (if provided) -->
                         ${descriptionHtml}
-
-                        <!-- Remarks (if provided) -->
-                        ${remarksHtml}
 
                         <!-- Footer -->
                         <tr>

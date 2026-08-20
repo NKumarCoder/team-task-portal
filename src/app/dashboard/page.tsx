@@ -190,17 +190,17 @@ export default function DashboardHome() {
   // 1. Metric Counts derived from filtered tasks
   const metrics = useMemo(() => {
     const total = filteredTasks.length;
-    const completed = filteredTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live').length;
+    const completed = filteredTasks.filter(t => t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live').length;
     const pending = filteredTasks.filter(t => t.status === 'assigned' || t.status === 'on-hold').length;
-    const testing = filteredTasks.filter(t => t.status === 'testing' || t.status === 'uat').length;
-    const inProgress = filteredTasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'development-completed' || t.status === 'code-review').length;
-    const blocked = filteredTasks.filter(t => t.status === 'blocked').length;
+    const testing = filteredTasks.filter(t => t.status === 'uat-testing' || t.status === 'uat-deployed' || t.status === 'testing' || t.status === 'uat').length;
+    const inProgress = filteredTasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'code-review' || t.status === 'ready-for-production-deploy' || t.status === 'development-completed').length;
+    const blocked = filteredTasks.filter(t => t.status === 'blocked' || t.status === 'uat-rejected').length;
     const critical = filteredTasks.filter(t => t.priority === 'critical').length;
 
     const today = new Date();
     today.setHours(0,0,0,0);
     const overdue = filteredTasks.filter(t => {
-      if (t.status === 'completed' || t.status === 'moved-to-live' || t.status === 'cancelled') return false;
+      if (t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live' || t.status === 'cancelled') return false;
       const d = new Date(t.expectedCompletionDate);
       d.setHours(0,0,0,0);
       return d.getTime() < today.getTime();
@@ -215,7 +215,7 @@ export default function DashboardHome() {
     { label: 'Pending', count: metrics.pending, icon: HelpCircle, color: 'text-amber-500', bg: 'bg-amber-500/10 border-amber-500/15' },
     { label: 'Testing', count: metrics.testing, icon: Clock, color: 'text-violet-500', bg: 'bg-violet-500/10 border-violet-500/15' },
     { label: 'In Progress', count: metrics.inProgress, icon: Play, color: 'text-blue-500', bg: 'bg-blue-500/10 border-blue-500/15' },
-    { label: 'Blocked', count: metrics.blocked, icon: Lock, color: 'text-rose-500', bg: 'bg-rose-500/10 border-rose-500/15' },
+    { label: 'Blocked / Rejected', count: metrics.blocked, icon: Lock, color: 'text-rose-500', bg: 'bg-rose-500/10 border-rose-500/15' },
     { label: 'Critical', count: metrics.critical, icon: ShieldAlert, color: 'text-red-500', bg: 'bg-red-500/10 border-red-500/15' },
     { label: 'Overdue', count: metrics.overdue, icon: AlertTriangle, color: 'text-orange-500', bg: 'bg-orange-500/10 border-orange-500/15' },
   ];
@@ -233,15 +233,15 @@ export default function DashboardHome() {
       const p = projectsMap[t.projectName];
       p.total += 1;
 
-      if (t.status === 'completed') p.completed += 1;
+      if (t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live') p.completed += 1;
       else if (t.status === 'assigned' || t.status === 'on-hold') p.pending += 1;
-      else if (t.status === 'testing' || t.status === 'uat') p.testing += 1;
-      else if (t.status === 'ready-for-deployment' || t.status === 'development-completed' || t.status === 'code-review') p.deployment += 1;
-      else if (t.status === 'moved-to-live' || t.status === 'deployed') p.live += 1;
+      else if (t.status === 'uat-testing' || t.status === 'uat-deployed' || t.status === 'testing' || t.status === 'uat') p.testing += 1;
+      else if (t.status === 'ready-for-production-deploy' || t.status === 'ready-for-deployment' || t.status === 'development-completed' || t.status === 'code-review') p.deployment += 1;
+      else if (t.status === 'uat-rejected' || t.status === 'blocked') p.pending += 1;
     });
 
     return Object.entries(projectsMap).map(([name, data]) => {
-      const actualCompleted = data.completed + data.live;
+      const actualCompleted = data.completed;
       const progress = data.total > 0 ? Math.round((actualCompleted / data.total) * 100) : 0;
       return { name, ...data, progress };
     }).sort((a, b) => b.progress - a.progress); // Sort by highest progress percentage first
@@ -688,11 +688,13 @@ export default function DashboardHome() {
               <option value="assigned">Assigned</option>
               <option value="in-progress">In Progress</option>
               <option value="supplier-pending">Supplier Pending</option>
-              <option value="testing">Testing</option>
-              <option value="ready-for-deployment">Ready for Deployment</option>
+              <option value="code-review">Code Review</option>
+              <option value="uat-deployed">UAT Deployed</option>
+              <option value="uat-testing">UAT Testing</option>
+              <option value="uat-rejected">UAT Rejected</option>
+              <option value="ready-for-production-deploy">Ready for Production Deploy</option>
+              <option value="prod-deployed">Prod Deployed</option>
               <option value="completed">Completed</option>
-              <option value="blocked">Blocked</option>
-              <option value="moved-to-live">Moved to Live</option>
             </select>
           </div>
 

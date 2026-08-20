@@ -55,10 +55,10 @@ export default function ReportsPage() {
   // Compute status share for the current active tasks list
   const pieData = [
     { name: 'Assigned', value: tasks.filter(t => t.status === 'assigned' || t.status === 'on-hold').length },
-    { name: 'In Progress', value: tasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'development-completed' || t.status === 'code-review').length },
-    { name: 'Testing', value: tasks.filter(t => t.status === 'testing' || t.status === 'uat').length },
-    { name: 'Completed', value: tasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live' || t.status === 'deployed').length },
-    { name: 'Blocked', value: tasks.filter(t => t.status === 'blocked').length },
+    { name: 'In Progress', value: tasks.filter(t => t.status === 'in-progress' || t.status === 'supplier-pending' || t.status === 'code-review' || t.status === 'development-completed').length },
+    { name: 'UAT / Testing', value: tasks.filter(t => t.status === 'uat-testing' || t.status === 'uat-deployed' || t.status === 'testing' || t.status === 'uat').length },
+    { name: 'Completed / Live', value: tasks.filter(t => t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'ready-for-production-deploy' || t.status === 'moved-to-live' || t.status === 'deployed').length },
+    { name: 'UAT Rejected / Blocked', value: tasks.filter(t => t.status === 'uat-rejected' || t.status === 'blocked').length },
   ].filter(item => item.value > 0); // only show populated categories
 
   if (loading) {

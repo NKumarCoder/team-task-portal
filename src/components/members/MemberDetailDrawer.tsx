@@ -38,11 +38,11 @@ export default function MemberDetailDrawer({ isOpen, onClose, member, tasks }: M
 
   // Compute Task Categories
   const activeTasks = useMemo(() => {
-    return memberTasks.filter(t => t.status !== 'completed' && t.status !== 'moved-to-live' && t.status !== 'cancelled');
+    return memberTasks.filter(t => t.status !== 'completed' && t.status !== 'prod-deployed' && t.status !== 'moved-to-live' && t.status !== 'cancelled');
   }, [memberTasks]);
 
   const completedTasks = useMemo(() => {
-    return memberTasks.filter(t => t.status === 'completed' || t.status === 'moved-to-live');
+    return memberTasks.filter(t => t.status === 'completed' || t.status === 'prod-deployed' || t.status === 'moved-to-live' || t.status === 'deployed');
   }, [memberTasks]);
 
   const today = new Date();

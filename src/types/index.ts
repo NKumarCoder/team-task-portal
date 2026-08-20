@@ -27,17 +27,24 @@ export interface Member {
 }
 
 export type TaskStatus = 
+  // 10 Active Workflow Statuses
   | 'assigned' 
   | 'in-progress' 
   | 'supplier-pending'
-  | 'development-completed' 
   | 'code-review' 
+  | 'uat-deployed' 
+  | 'uat-testing' 
+  | 'uat-rejected' 
+  | 'ready-for-production-deploy' 
+  | 'prod-deployed' 
+  | 'completed' 
+  // Legacy / Historical Backward Compatibility
+  | 'development-completed'
   | 'testing' 
   | 'uat' 
   | 'ready-for-deployment' 
   | 'deployed' 
   | 'moved-to-live' 
-  | 'completed' 
   | 'blocked' 
   | 'on-hold' 
   | 'cancelled';
@@ -46,9 +53,11 @@ export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 
 export interface TaskStatusHistory {
   status: TaskStatus;
+  previousStatus?: TaskStatus | string;
   updatedBy: string; // User email
   updatedByName: string; // User display name
   updatedAt: string; // ISO Date String
+  comment?: string; // Status update comment / rejection reason
   remarks?: string;
 }
 
@@ -85,6 +94,7 @@ export interface Task {
   estimatedHours: number;
   labels: string[]; // Multiple tags
   remarks: string;
+  latestRejectionReason?: string; // Latest UAT rejection reason if applicable
   attachments?: Attachment[]; // File attachments
   subtasks?: Subtask[]; // Checklist items
   dependencies?: string[]; // Array of prerequisite Task IDs (e.g. ['TASK-000001'])
