@@ -1,5 +1,7 @@
 import { TaskPriority, TaskStatus, UserRole } from '../types';
 
+export const WORKING_HOURS_PER_DAY = 9;
+
 export const TASK_PRIORITIES: { value: TaskPriority; label: string; color: string }[] = [
   { value: 'low', label: 'Low', color: '#3b82f6' },
   { value: 'medium', label: 'Medium', color: '#8b5cf6' },

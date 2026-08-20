@@ -26,7 +26,7 @@ import {
   projectsCollection
 } from '../firebase/firestore';
 import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee } from '../types';
-import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '../utils';
+import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients } from '../utils';
 import { MAX_ASSIGNEES } from '../constants';
 
 // Helper to prevent Firestore from hanging forever when offline or unconfigured
@@ -232,13 +232,16 @@ class DBService {
       });
     }
 
-    // Trigger Email Notification in the background (sent to all assignees, CC to assigner/creator if not in TO)
+    // Trigger Email Notification in the background (sent to all assignees, CC to creator and Head)
     try {
       const assignerEmail = (userEmail || task.createdBy || '').toLowerCase();
+      const recipients = getTaskEmailRecipients(savedTask, {
+        creatorEmail: assignerEmail,
+      });
       
-      if (assigneeEmails.length > 0) {
+      if (recipients.to.length > 0) {
         const mailPayload: any = {
-          to: assigneeEmails,
+          to: recipients.to,
           subject: `[Task Allocated] Task ${savedTask.taskId}: ${task.title}`,
           html: `
             <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 8px;">
@@ -286,9 +289,8 @@ class DBService {
           `
         };
 
-        // CC to the creator/assigner if they are not the same person as any assignee
-        if (assignerEmail && !assigneeEmails.includes(assignerEmail)) {
-          mailPayload.cc = assignerEmail;
+        if (recipients.cc.length > 0) {
+          mailPayload.cc = recipients.cc;
         }
 
         // Add attachments if provided
@@ -539,9 +541,13 @@ class DBService {
               </td>
             </tr>
           ` : '';
+          const recipients = getTaskEmailRecipients(original, {
+            creatorEmail: original.createdBy,
+            extraCc: userEmail ? [userEmail] : [],
+          });
 
           const mailPayload: any = {
-            to: currentAssigneeIds,
+            to: recipients.to,
             subject: `[Task Allocated] Task ${original.taskId}: ${original.title}`,
             html: `
               <!DOCTYPE html>
@@ -568,11 +574,13 @@ class DBService {
                             <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
                               <tr>
                                 <td align="left">
-                                  <span style="font-size: 14px; font-weight: 700; color: #0f172a; letter-spacing: -0.2px;">Team Task Portal</span>
+                                  <div style="font-size: 15px; font-weight: 800; color: #0f172a; letter-spacing: -0.3px;">
+                                    Team Task Portal
+                                  </div>
                                 </td>
                                 <td align="right">
-                                  <span style="display: inline-block; font-size: 10px; font-weight: 700; color: ${isRejectionStatus ? '#b91c1c' : '#4f46e5'}; text-transform: uppercase; letter-spacing: 0.8px; background-color: ${isRejectionStatus ? '#fef2f2' : '#eef2ff'}; padding: 4px 10px; border-radius: 20px; border: 1px solid ${isRejectionStatus ? '#fecaca' : '#e0e7ff'};">
-                                    ${isRejectionStatus ? 'UAT Rejected' : 'Task Update'}
+                                  <span style="display: inline-block; font-family: monospace; font-size: 12px; font-weight: 700; color: #4338ca; background-color: #eef2ff; border: 1px solid #c7d2fe; padding: 3px 8px; border-radius: 6px;">
+                                    ${original.taskId}
                                   </span>
                                 </td>
                               </tr>
@@ -580,15 +588,20 @@ class DBService {
                           </td>
                         </tr>
 
-                        <!-- Main Title & Task Identifier -->
+                        <!-- Task Title & Heading -->
                         <tr>
-                          <td style="padding: 18px 24px 12px 24px;">
-                            <h1 style="margin: 0 0 4px 0; font-size: 18px; font-weight: 700; color: #0f172a; line-height: 1.3;">
-                              ${isRejectionStatus ? 'Task UAT Rejected' : 'Task Status Updated'}
-                            </h1>
-                            <div style="font-size: 13px; color: #475569; font-weight: 500; line-height: 1.4;">
-                              <span style="font-family: monospace; font-weight: 700; color: ${isRejectionStatus ? '#b91c1c' : '#4f46e5'};">${original.taskId}</span> · ${original.title}
+                          <td style="padding: 20px 24px 16px 24px;">
+                            <div style="font-size: 11px; font-weight: 700; color: ${isRejectionStatus ? '#dc2626' : '#4f46e5'}; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px;">
+                              ${isRejectionStatus ? '⚠ Task UAT Rejected' : 'Task Status Updated'}
                             </div>
+                            <h1 style="margin: 0 0 6px 0; font-size: 18px; font-weight: 700; color: #0f172a; line-height: 1.35;">
+                              ${original.title}
+                            </h1>
+                            <p style="margin: 0; font-size: 13px; color: #64748b; line-height: 1.4;">
+                              ${isRejectionStatus 
+                                ? `This task was rejected during UAT and requires development attention.` 
+                                : `The status of this task has been updated to <strong>${newStatusFormatted}</strong>.`}
+                            </p>
                           </td>
                         </tr>
 
@@ -639,10 +652,8 @@ class DBService {
 
                         <!-- Task Details (Compact 2-Column Grid) -->
                         <tr>
-                          <td style="padding: 0 24px 14px 24px;">
-                            <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px;">Task Details</div>
-                            
-                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse: collapse; font-size: 12px;">
+                          <td style="padding: 0 24px 16px 24px;">
+                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px;">
                               <tr>
                                 <td style="padding: 6px 10px 6px 0; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
                                   <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Task ID</span>
@@ -664,19 +675,9 @@ class DBService {
                                 </td>
                               </tr>
                               <tr>
-                                <td style="padding: 6px 10px 6px 0; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
-                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Assignees</span>
-                                  <span style="font-weight: 600; color: #0f172a; font-size: 13px;">${assigneeDisplayName}</span>
-                                </td>
-                                <td style="padding: 6px 0 6px 10px; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                <td style="padding: 6px 10px 6px 0; width: 50%; vertical-align: top;">
                                   <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Due Date</span>
                                   <span style="font-weight: 500; color: #0f172a; font-size: 13px;">${dueDateFormatted}</span>
-                                </td>
-                              </tr>
-                              <tr>
-                                <td style="padding: 6px 10px 6px 0; width: 50%; vertical-align: top;">
-                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Created By</span>
-                                  <span style="font-weight: 500; color: #0f172a; font-size: 13px;">${createdByNameFormatted}</span>
                                 </td>
                                 <td style="padding: 6px 0 6px 10px; width: 50%; vertical-align: top;">
                                   <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Created On</span>
@@ -707,9 +708,8 @@ class DBService {
             `
           };
 
-          // CC to the updater/creator if different from any assignee in TO
-          if (updaterOrCreatorEmail && !currentAssigneeIds.includes(updaterOrCreatorEmail)) {
-            mailPayload.cc = updaterOrCreatorEmail;
+          if (recipients.cc.length > 0) {
+            mailPayload.cc = recipients.cc;
           }
 
           // Call Next.js SMTP API Route asynchronously (fire-and-forget background task)
@@ -1048,9 +1048,16 @@ class DBService {
       if (typeof window !== 'undefined') {
         const mailSubject = `[Task Allocated] Task ${task.taskId || taskId}: ${task.title}`;
         const allAssigneeNames = getTaskAssigneeNames({ assignees: updatedAssignees });
+        const recipients = getTaskEmailRecipients(
+          { ...task, assignees: updatedAssignees },
+          {
+            creatorEmail: task.createdBy,
+            extraCc: addedBy ? [addedBy] : [],
+          }
+        );
 
         const mailPayload: any = {
-          to: candidateEmail,
+          to: recipients.to.length > 0 ? recipients.to : [candidateEmail],
           subject: mailSubject,
           html: `
             <!DOCTYPE html>
@@ -1146,8 +1153,8 @@ class DBService {
           `
         };
 
-        if (addedBy && addedBy.toLowerCase() !== candidateEmail) {
-          mailPayload.cc = addedBy;
+        if (recipients.cc.length > 0) {
+          mailPayload.cc = recipients.cc;
         }
 
         fetch('/api/send-email', {

@@ -11,7 +11,7 @@ import { dbService } from '@/services/dbService';
 import { Task, TaskPriority, TaskStatus, Member, Project, Attachment, TaskAssignee } from '@/types';
 import toast from 'react-hot-toast';
 import { TASK_PRIORITIES } from '@/constants';
-import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
+import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, calculateWorkingDays, calculateEstimatedEffort, formatEstimatedDays, parseDateOnlyToUTC } from '@/utils';
 
 const taskFormSchema = z.object({
   projectName: z.string().min(1, 'Project Name is required'),
@@ -21,15 +21,20 @@ const taskFormSchema = z.object({
   priority: z.enum(['critical', 'high', 'medium', 'low']),
   module: z.string().min(1, 'Module is required'),
   startDate: z.string().optional().or(z.literal('')),
-  expectedCompletionDate: z.string().optional().or(z.literal('')).refine((val) => {
-    if (!val) return true;
-    const today = new Date();
-    today.setHours(0,0,0,0);
-    const selected = new Date(val);
-    selected.setHours(0,0,0,0);
-    return selected.getTime() >= today.getTime();
-  }, { message: "Completion date cannot be in the past." }),
+  expectedCompletionDate: z.string().optional().or(z.literal('')),
   remarks: z.string().optional().default(''),
+}).refine((data) => {
+  if (data.startDate && data.expectedCompletionDate) {
+    const startUTC = parseDateOnlyToUTC(data.startDate);
+    const endUTC = parseDateOnlyToUTC(data.expectedCompletionDate);
+    if (startUTC && endUTC && endUTC.getTime() < startUTC.getTime()) {
+      return false;
+    }
+  }
+  return true;
+}, {
+  message: 'Expected completion date cannot be earlier than the start date.',
+  path: ['expectedCompletionDate'],
 });
 
 type TaskFormValues = z.infer<typeof taskFormSchema>;
@@ -84,32 +89,25 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   const expectedCompletionDate = watch('expectedCompletionDate');
   const startDate = watch('startDate');
 
-  // Calculates working days between today and expected due date (excluding Sat/Sun)
-  const calculateWorkingDays = (startDateStr: string, endDateStr: string): number => {
-    try {
-      const start = new Date(startDateStr);
-      const end = new Date(endDateStr);
-      
-      start.setHours(0,0,0,0);
-      end.setHours(0,0,0,0);
-      
-      if (end.getTime() <= start.getTime()) return 0;
-      
-      let workingDays = 0;
-      const current = new Date(start);
-      
-      while (current.getTime() < end.getTime()) {
-        current.setDate(current.getDate() + 1);
-        const dayOfWeek = current.getDay();
-        if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Exclude Sat (6) and Sun (0)
-          workingDays++;
-        }
+  const dateRangeError = useMemo(() => {
+    if (startDate && expectedCompletionDate) {
+      const startUTC = parseDateOnlyToUTC(startDate);
+      const endUTC = parseDateOnlyToUTC(expectedCompletionDate);
+      if (startUTC && endUTC && endUTC.getTime() < startUTC.getTime()) {
+        return 'Expected completion date cannot be earlier than the start date.';
       }
-      return workingDays;
-    } catch {
-      return 0;
     }
-  };
+    return null;
+  }, [startDate, expectedCompletionDate]);
+
+  const calculatedDays = useMemo(() => {
+    if (!expectedCompletionDate || !startDate || dateRangeError) return 0;
+    return calculateWorkingDays(startDate, expectedCompletionDate);
+  }, [expectedCompletionDate, startDate, dateRangeError]);
+
+  const calculatedHours = useMemo(() => {
+    return calculatedDays * 9;
+  }, [calculatedDays]);
 
   const handleAddProject = async () => {
     if (!newProjectName.trim()) return;
@@ -131,11 +129,6 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       setAddingProject(false);
     }
   };
-
-  const calculatedHours = useMemo(() => {
-    if (!expectedCompletionDate || !startDate) return 0;
-    return calculateWorkingDays(startDate, expectedCompletionDate) * 8;
-  }, [expectedCompletionDate, startDate]);
 
   // Load team members & projects
   useEffect(() => {
@@ -638,19 +631,23 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                       />
                     )}
                   />
-                  {errors.expectedCompletionDate && <p className="text-[9px] text-destructive font-semibold">{errors.expectedCompletionDate.message}</p>}
+                  {(errors.expectedCompletionDate?.message || dateRangeError) && (
+                    <p className="text-[9px] text-destructive font-semibold">
+                      {errors.expectedCompletionDate?.message || dateRangeError}
+                    </p>
+                  )}
                 </div>
               </div>
 
               {/* Estimated Effort Display */}
-              {!errors.expectedCompletionDate && !errors.startDate && (
+              {!errors.expectedCompletionDate && !errors.startDate && !dateRangeError && (
                 <div className="flex items-center justify-between px-3 py-2 bg-primary/5 border border-primary/15 rounded-lg">
                   <div>
                     <span className="text-[11px] font-semibold text-foreground/90 block">Estimated Effort</span>
                     <span className="text-[10px] text-muted-foreground">Calculated automatically</span>
                   </div>
                   <span className="text-xs font-bold text-primary font-mono bg-primary/10 px-2.5 py-1 rounded-md border border-primary/20">
-                    {calculatedHours} Hours
+                    {formatEstimatedDays(calculatedDays)}
                   </span>
                 </div>
               )}

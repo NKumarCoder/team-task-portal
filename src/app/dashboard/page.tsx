@@ -33,7 +33,7 @@ import {
   Award
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
+import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEstimatedDays, formatEstimatedDays } from '@/utils';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { isFirebaseConfigured } from '@/firebase/config';
@@ -1118,7 +1118,7 @@ export default function DashboardHome() {
                     <h4 className="font-extrabold text-xs text-foreground line-clamp-1">{t.title}</h4>
                     <div className="flex justify-between text-[9px] font-bold text-muted-foreground">
                       <span className="truncate max-w-[120px]">{getTaskAssigneeNames(t)}</span>
-                      <span>Hours Left: <strong className="text-foreground">{t.estimatedHours || 0}h</strong></span>
+                      <span>Effort: <strong className="text-foreground">{formatEstimatedDays(getTaskEstimatedDays(t))}</strong></span>
                     </div>
                   </div>
                 ))

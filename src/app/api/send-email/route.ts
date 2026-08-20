@@ -12,6 +12,41 @@ export async function POST(request: Request) {
       );
     }
 
+    const headEmail = (process.env.TASK_HEAD_EMAIL || 'rr@i2space.com').trim().toLowerCase();
+
+    // Helper to sanitize and deduplicate emails
+    const normalizeEmails = (input: any): string[] => {
+      if (!input) return [];
+      const arr = Array.isArray(input) ? input : String(input).split(/[,;]/);
+      return arr
+        .map((e: any) => (typeof e === 'string' ? e.trim().toLowerCase() : ''))
+        .filter((e: string) => e.length > 0 && e.includes('@'));
+    };
+
+    const toList = Array.from(new Set(normalizeEmails(to)));
+    if (toList.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No valid recipient email provided in "to" field.' },
+        { status: 400 }
+      );
+    }
+    const toSet = new Set(toList);
+
+    // CC candidates: incoming cc + head email
+    const rawCcList = normalizeEmails(cc);
+    if (headEmail && headEmail.includes('@')) {
+      rawCcList.push(headEmail);
+    }
+
+    // Filter CC to omit duplicates and any email already in TO
+    const ccSet = new Set<string>();
+    rawCcList.forEach((email) => {
+      if (!toSet.has(email)) {
+        ccSet.add(email);
+      }
+    });
+    const ccList = Array.from(ccSet);
+
     const host = process.env.SMTP_HOST;
     const port = Number(process.env.SMTP_PORT || '587');
     const user = process.env.SMTP_USER;
@@ -38,13 +73,13 @@ export async function POST(request: Request) {
 
     const mailOptions: nodemailer.SendMailOptions = {
       from,
-      to,
+      to: toList,
       subject,
       html,
     };
 
-    if (cc) {
-      mailOptions.cc = cc;
+    if (ccList.length > 0) {
+      mailOptions.cc = ccList;
     }
 
     if (attachments && attachments.length > 0) {
@@ -56,7 +91,7 @@ export async function POST(request: Request) {
     }
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('[SMTP] Email sent successfully. Message ID:', info.messageId);
+    console.log('[SMTP] Email sent successfully. Message ID:', info.messageId, 'TO:', toList, 'CC:', ccList);
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error: any) {

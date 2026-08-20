@@ -107,3 +107,180 @@ export function formatTimeAgo(dateString: string): string {
     return '';
   }
 }
+
+export interface TaskEmailRecipients {
+  to: string[];
+  cc: string[];
+}
+
+export interface TaskEmailRecipientsOptions {
+  creatorEmail?: string;
+  extraCc?: string[];
+  headEmail?: string;
+}
+
+/**
+ * Resolves the authoritative list of email recipients for task lifecycle events:
+ * - TO: All current assignees/co-assignees
+ * - CC: Task creator, Head of Management ('rr@i2space.com'), plus any extra CC addresses
+ * - Priority: If an email is in TO, it is omitted from CC.
+ * - Deduplication: All addresses are deduplicated case-insensitively and returned in clean lowercase.
+ */
+export function getTaskEmailRecipients(
+  task?: Partial<Task> | null,
+  options?: TaskEmailRecipientsOptions
+): TaskEmailRecipients {
+  const headEmail = (options?.headEmail || 'rr@i2space.com').trim().toLowerCase();
+
+  // 1. Resolve TO recipients (all current assignees)
+  const rawAssignees = getTaskAssigneeIds(task);
+  const toSet = new Set<string>();
+  rawAssignees.forEach((email) => {
+    const clean = email.trim().toLowerCase();
+    if (clean && clean.includes('@')) {
+      toSet.add(clean);
+    }
+  });
+
+  // 2. Resolve CC candidates (Creator + Head + extraCc)
+  const ccCandidates: string[] = [];
+
+  const creator = (options?.creatorEmail || task?.createdBy || '').trim().toLowerCase();
+  if (creator && creator.includes('@')) {
+    ccCandidates.push(creator);
+  }
+
+  if (headEmail && headEmail.includes('@')) {
+    ccCandidates.push(headEmail);
+  }
+
+  if (options?.extraCc && Array.isArray(options.extraCc)) {
+    options.extraCc.forEach((email) => {
+      const clean = email.trim().toLowerCase();
+      if (clean && clean.includes('@')) {
+        ccCandidates.push(clean);
+      }
+    });
+  }
+
+  // 3. Filter CC to omit duplicates and any email already in TO
+  const ccSet = new Set<string>();
+  ccCandidates.forEach((email) => {
+    if (!toSet.has(email)) {
+      ccSet.add(email);
+    }
+  });
+
+  return {
+    to: Array.from(toSet),
+    cc: Array.from(ccSet),
+  };
+}
+
+import { WORKING_HOURS_PER_DAY } from '@/constants';
+
+/**
+ * Parses a date string (YYYY-MM-DD, MM/DD/YYYY, or ISO timestamp) into UTC midnight Date
+ * to ensure 100% timezone-independent and DST-immune date comparisons.
+ */
+export function parseDateOnlyToUTC(dateStr?: string | null): Date | null {
+  if (!dateStr || typeof dateStr !== 'string' || !dateStr.trim()) return null;
+  const trimmed = dateStr.trim();
+
+  // Match YYYY-MM-DD (e.g., "2026-08-20")
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  }
+
+  // Match DD/MM/YYYY or MM/DD/YYYY or DD-MM-YYYY
+  const slashMatch = trimmed.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (slashMatch) {
+    const part1 = parseInt(slashMatch[1], 10);
+    const part2 = parseInt(slashMatch[2], 10);
+    const year = parseInt(slashMatch[3], 10);
+    
+    // If part1 > 12, it's definitely DD/MM/YYYY
+    let month = part1 - 1;
+    let day = part2;
+    if (part1 > 12) {
+      day = part1;
+      month = part2 - 1;
+    }
+    return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  }
+
+  const d = new Date(trimmed);
+  if (isNaN(d.getTime())) return null;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+}
+
+/**
+ * Calculates inclusive calendar days between startDate and expectedCompletionDate:
+ * - Both dates are required.
+ * - Same day (Start = End) -> 1 day
+ * - Start = 20/08/2026, End = 21/08/2026 -> 2 days
+ * - Start = 20/08/2026, End = 22/08/2026 -> 3 days
+ * - If End < Start -> 0 days (invalid range)
+ * - Returns integer number of inclusive days.
+ */
+export function calculateWorkingDays(startDateStr?: string | null, endDateStr?: string | null): number {
+  const startUTC = parseDateOnlyToUTC(startDateStr);
+  const endUTC = parseDateOnlyToUTC(endDateStr);
+
+  if (!startUTC || !endUTC) return 0;
+  if (endUTC.getTime() < startUTC.getTime()) return 0;
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const diffDays = Math.round((endUTC.getTime() - startUTC.getTime()) / msPerDay);
+  return diffDays + 1; // Inclusive of both start date and end date
+}
+
+/**
+ * Calculates estimated effort in hours:
+ * Estimated Effort = Working Days * WORKING_HOURS_PER_DAY (9)
+ * Examples:
+ * - 20/08/2026 -> 20/08/2026 = 1 day  * 9 = 9 Hours
+ * - 20/08/2026 -> 21/08/2026 = 2 days * 9 = 18 Hours
+ * - 20/08/2026 -> 22/08/2026 = 3 days * 9 = 27 Hours
+ */
+export function calculateEstimatedEffort(
+  startDateStr?: string | null,
+  endDateStr?: string | null,
+  hoursPerDay: number = WORKING_HOURS_PER_DAY
+): number {
+  const days = calculateWorkingDays(startDateStr, endDateStr);
+  return Math.round(days * hoursPerDay);
+}
+
+/**
+ * Formats a day count into a clean user-facing string:
+ * - 1 -> "1 Day"
+ * - 2 -> "2 Days"
+ * - 0 -> "0 Days"
+ */
+export function formatEstimatedDays(days: number): string {
+  const count = Math.max(0, Math.round(days || 0));
+  return `${count} ${count === 1 ? 'Day' : 'Days'}`;
+}
+
+/**
+ * Resolves the estimated days for a task (derives from dates or from stored estimatedHours / 9).
+ */
+export function getTaskEstimatedDays(task?: Partial<Task> | null): number {
+  if (!task) return 0;
+  if (task.startDate && task.expectedCompletionDate) {
+    const days = calculateWorkingDays(task.startDate, task.expectedCompletionDate);
+    if (days > 0) return days;
+  }
+  if (typeof task.estimatedHours === 'number' && task.estimatedHours > 0) {
+    return Math.max(1, Math.round(task.estimatedHours / WORKING_HOURS_PER_DAY));
+  }
+  return 0;
+}
+
+
+
