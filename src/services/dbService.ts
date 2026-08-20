@@ -402,6 +402,273 @@ class DBService {
           timestamp: new Date().toISOString()
         });
       }
+
+      // Trigger Email Notification in the background on status change (sent to assignee, CC to updater/creator)
+      try {
+        const assigneeEmail = (original.assigneeId || '').toLowerCase();
+        const updaterOrCreatorEmail = (userEmail || original.createdBy || '').toLowerCase();
+
+        if (assigneeEmail) {
+          const updaterName = userName || (userEmail ? userEmail.split('@')[0] : 'Team Member');
+          const assigneeDisplayName = original.assigneeName || original.assigneeId || 'Team Member';
+          const createdByNameFormatted = original.createdByName || (original.createdBy ? original.createdBy.split('@')[0] : 'System');
+          const createdDateFormatted = original.createdDate ? formatDate(original.createdDate) : '—';
+          const dueDateFormatted = original.expectedCompletionDate ? formatDate(original.expectedCompletionDate) : '—';
+
+          const now = new Date();
+          const updatedAtFormatted = new Intl.DateTimeFormat('en-US', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+          }).format(now);
+
+          const formatStatusLabel = (status: string): string => {
+            return status.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+          };
+
+          const getStatusBadgeStyle = (status: string, isNew: boolean = false): { bg: string; color: string; border: string } => {
+            switch (status.toLowerCase()) {
+              case 'completed':
+              case 'moved-to-live':
+              case 'deployed':
+              case 'development-completed':
+                return { bg: '#ecfdf5', color: '#047857', border: '#a7f3d0' };
+              case 'in-progress':
+              case 'testing':
+              case 'code-review':
+                return { bg: isNew ? '#e0e7ff' : '#f1f5f9', color: isNew ? '#4338ca' : '#475569', border: isNew ? '#c7d2fe' : '#cbd5e1' };
+              case 'supplier-pending':
+              case 'uat':
+                return { bg: '#fffbeb', color: '#b45309', border: '#fde68a' };
+              case 'blocked':
+              case 'cancelled':
+                return { bg: '#fef2f2', color: '#b91c1c', border: '#fecaca' };
+              case 'on-hold':
+              case 'assigned':
+              default:
+                return { bg: isNew ? '#eff6ff' : '#f1f5f9', color: isNew ? '#1d4ed8' : '#475569', border: isNew ? '#bfdbfe' : '#cbd5e1' };
+            }
+          };
+
+          const prevStatusFormatted = formatStatusLabel(original.status);
+          const newStatusFormatted = formatStatusLabel(updates.status);
+          const prevBadge = getStatusBadgeStyle(original.status, false);
+          const newBadge = getStatusBadgeStyle(updates.status, true);
+
+          const descriptionHtml = original.description && original.description.trim() ? `
+            <tr>
+              <td style="padding: 0 24px 14px 24px;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">Description</div>
+                <div style="background-color: #f8fafc; border-left: 3px solid #6366f1; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 13px; color: #334155; line-height: 1.5; white-space: pre-wrap;">${original.description.trim()}</div>
+              </td>
+            </tr>
+          ` : '';
+
+          const currentRemarks = (updates.remarks !== undefined ? updates.remarks : (original.remarks || '')).trim();
+          const hasRemarks = currentRemarks && currentRemarks.toLowerCase() !== 'no remarks' && currentRemarks.toLowerCase() !== 'none';
+          const remarksHtml = hasRemarks ? `
+            <tr>
+              <td style="padding: 0 24px 16px 24px;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;">Remarks</div>
+                <div style="background-color: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 13px; color: #92400e; line-height: 1.5; white-space: pre-wrap;">${currentRemarks}</div>
+              </td>
+            </tr>
+          ` : '';
+
+          const mailPayload: any = {
+            to: assigneeEmail,
+            subject: `[Task Allocated] Task ${original.taskId}: ${original.title}`,
+            html: `
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Task Status Updated</title>
+              </head>
+              <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%;">
+                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f1f5f9; padding: 24px 12px;">
+                  <tr>
+                    <td align="center">
+                      <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                        
+                        <!-- Top Accent Bar -->
+                        <tr>
+                          <td style="height: 4px; background-color: #4f46e5;"></td>
+                        </tr>
+
+                        <!-- Top Brand Header -->
+                        <tr>
+                          <td style="padding: 16px 24px 12px 24px; border-bottom: 1px solid #f1f5f9;">
+                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+                              <tr>
+                                <td align="left">
+                                  <span style="font-size: 14px; font-weight: 700; color: #0f172a; letter-spacing: -0.2px;">Team Task Portal</span>
+                                </td>
+                                <td align="right">
+                                  <span style="display: inline-block; font-size: 10px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.8px; background-color: #eef2ff; padding: 4px 10px; border-radius: 20px; border: 1px solid #e0e7ff;">Task Update</span>
+                                </td>
+                              </tr>
+                            </table>
+                          </td>
+                        </tr>
+
+                        <!-- Main Title & Task Identifier -->
+                        <tr>
+                          <td style="padding: 18px 24px 12px 24px;">
+                            <h1 style="margin: 0 0 4px 0; font-size: 18px; font-weight: 700; color: #0f172a; line-height: 1.3;">Task Status Updated</h1>
+                            <div style="font-size: 13px; color: #475569; font-weight: 500; line-height: 1.4;">
+                              <span style="font-family: monospace; font-weight: 700; color: #4f46e5;">${original.taskId}</span> · ${original.title}
+                            </div>
+                          </td>
+                        </tr>
+
+                        <!-- Status Transition Card -->
+                        <tr>
+                          <td style="padding: 0 24px 16px 24px;">
+                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px;">
+                              <tr>
+                                <td style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; padding-bottom: 10px;">Status Transition</td>
+                              </tr>
+                              <tr>
+                                <td>
+                                  <table role="presentation" border="0" cellpadding="0" cellspacing="0">
+                                    <tr>
+                                      <td style="background-color: ${prevBadge.bg}; color: ${prevBadge.color}; border: 1px solid ${prevBadge.border}; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 20px; text-transform: capitalize;">
+                                        ${prevStatusFormatted}
+                                      </td>
+                                      <td style="padding: 0 10px; font-size: 15px; color: #94a3b8; font-weight: bold;">
+                                        →
+                                      </td>
+                                      <td style="background-color: ${newBadge.bg}; color: ${newBadge.color}; border: 1px solid ${newBadge.border}; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 20px; text-transform: capitalize;">
+                                        ${newStatusFormatted}
+                                      </td>
+                                    </tr>
+                                  </table>
+                                </td>
+                              </tr>
+                              <tr>
+                                <td style="padding-top: 12px; margin-top: 12px; border-top: 1px solid #e2e8f0;">
+                                  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+                                    <tr>
+                                      <td style="font-size: 12px; color: #64748b;" width="50%">
+                                        Updated by: <strong style="color: #0f172a; font-weight: 600;">${updaterName}</strong>
+                                      </td>
+                                      <td style="font-size: 12px; color: #64748b; text-align: right;" width="50%">
+                                        Updated on: <strong style="color: #0f172a; font-weight: 600;">${updatedAtFormatted}</strong>
+                                      </td>
+                                    </tr>
+                                  </table>
+                                </td>
+                              </tr>
+                            </table>
+                          </td>
+                        </tr>
+
+                        <!-- Task Details (Compact 2-Column Grid) -->
+                        <tr>
+                          <td style="padding: 0 24px 14px 24px;">
+                            <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px;">Task Details</div>
+                            
+                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse: collapse; font-size: 12px;">
+                              <tr>
+                                <td style="padding: 6px 10px 6px 0; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Task ID</span>
+                                  <span style="font-family: monospace; font-weight: 700; color: #0f172a; font-size: 13px;">${original.taskId}</span>
+                                </td>
+                                <td style="padding: 6px 0 6px 10px; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Project</span>
+                                  <span style="font-weight: 600; color: #0f172a; font-size: 13px;">${original.projectName}</span>
+                                </td>
+                              </tr>
+                              <tr>
+                                <td style="padding: 6px 10px 6px 0; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Module</span>
+                                  <span style="font-weight: 500; color: #0f172a; font-size: 13px;">${original.module || '—'}</span>
+                                </td>
+                                <td style="padding: 6px 0 6px 10px; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Priority</span>
+                                  <span style="font-weight: 600; color: #0f172a; font-size: 13px; text-transform: capitalize;">${original.priority}</span>
+                                </td>
+                              </tr>
+                              <tr>
+                                <td style="padding: 6px 10px 6px 0; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Assignee</span>
+                                  <span style="font-weight: 600; color: #0f172a; font-size: 13px;">${assigneeDisplayName}</span>
+                                </td>
+                                <td style="padding: 6px 0 6px 10px; border-bottom: 1px solid #f1f5f9; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Due Date</span>
+                                  <span style="font-weight: 500; color: #0f172a; font-size: 13px;">${dueDateFormatted}</span>
+                                </td>
+                              </tr>
+                              <tr>
+                                <td style="padding: 6px 10px 6px 0; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Created By</span>
+                                  <span style="font-weight: 500; color: #0f172a; font-size: 13px;">${createdByNameFormatted}</span>
+                                </td>
+                                <td style="padding: 6px 0 6px 10px; width: 50%; vertical-align: top;">
+                                  <span style="display: block; color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Created On</span>
+                                  <span style="font-weight: 500; color: #0f172a; font-size: 13px;">${createdDateFormatted}</span>
+                                </td>
+                              </tr>
+                            </table>
+                          </td>
+                        </tr>
+
+                        <!-- Description (if provided) -->
+                        ${descriptionHtml}
+
+                        <!-- Remarks (if provided) -->
+                        ${remarksHtml}
+
+                        <!-- Footer -->
+                        <tr>
+                          <td style="padding: 14px 24px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;">
+                            <p style="margin: 0 0 3px 0; font-size: 12px; font-weight: 600; color: #475569;">Team Task Portal</p>
+                            <p style="margin: 0; font-size: 11px; color: #94a3b8;">This is an automated task notification. Please do not reply directly to this email.</p>
+                          </td>
+                        </tr>
+
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </body>
+              </html>
+            `
+          };
+
+          // CC to the updater/creator if different from assignee
+          if (updaterOrCreatorEmail && updaterOrCreatorEmail !== assigneeEmail) {
+            mailPayload.cc = updaterOrCreatorEmail;
+          }
+
+          // Call Next.js SMTP API Route asynchronously (fire-and-forget background task)
+          fetch('/api/send-email', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(mailPayload),
+          })
+            .then((response) => response.json())
+            .then((resData) => {
+              if (resData.success) {
+                console.log(`[dbService] Background SMTP status update email sent successfully for task ${original.taskId}`);
+              } else {
+                console.warn(`[dbService] Background SMTP API failed for status update:`, resData.error);
+              }
+            })
+            .catch((fetchError) => {
+              console.error("[dbService] Background SMTP API network/fetch error on status update:", fetchError);
+            });
+        }
+      } catch (mailError) {
+        console.error("[dbService] Failed to queue task status update email:", mailError);
+      }
     }
 
     if (updates.assigneeId && updates.assigneeId.toLowerCase() !== original.assigneeId.toLowerCase()) {

@@ -5,19 +5,39 @@ export async function POST(request: Request) {
   try {
     const { to, cc, subject, html, attachments } = await request.json();
 
-    // SMTP Credentials - Change these placeholders with actual values later
+    if (!to || !subject || !html) {
+      return NextResponse.json(
+        { success: false, error: 'Missing required email fields (to, subject, html).' },
+        { status: 400 }
+      );
+    }
+
+    const host = process.env.SMTP_HOST;
+    const port = Number(process.env.SMTP_PORT || '587');
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASS;
+    const from = process.env.SMTP_FROM || (user ? `"Team Task Portal" <${user}>` : undefined);
+
+    if (!host || !user || !pass || !from) {
+      console.error('[SMTP] Incomplete SMTP configuration: Missing required environment variables.');
+      return NextResponse.json(
+        { success: false, error: 'SMTP configuration is incomplete.' },
+        { status: 500 }
+      );
+    }
+
     const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.example.com",
-      port: parseInt(process.env.SMTP_PORT || "587"),
-      secure: false, // true for port 465, false for other ports (587, 25)
+      host,
+      port,
+      secure: false, // port 587 uses STARTTLS
       auth: {
-        user: process.env.SMTP_USER || "demo_user@example.com",
-        pass: process.env.SMTP_PASS || "demo_password_placeholder",
+        user,
+        pass,
       },
     });
 
-    const mailOptions: any = {
-      from: process.env.SMTP_FROM || '"Team Task Portal" <noreply@example.com>',
+    const mailOptions: nodemailer.SendMailOptions = {
+      from,
       to,
       subject,
       html,
@@ -36,14 +56,22 @@ export async function POST(request: Request) {
     }
 
     const info = await transporter.sendMail(mailOptions);
-    console.log("[SMTP] Email sent successfully:", info.messageId);
+    console.log('[SMTP] Email sent successfully. Message ID:', info.messageId);
 
     return NextResponse.json({ success: true, messageId: info.messageId });
   } catch (error: any) {
-    console.error("[SMTP] Error sending email:", error);
+    if (error?.code === 'EAUTH') {
+      console.error('[SMTP] Authentication failed with the SMTP server.');
+      return NextResponse.json(
+        { success: false, error: 'SMTP authentication failed. Please check credentials.' },
+        { status: 500 }
+      );
+    }
+    console.error('[SMTP] Error sending email:', error?.message || error);
     return NextResponse.json(
-      { success: false, error: error.message || "Failed to send email via SMTP" },
+      { success: false, error: error?.message || 'Failed to send email via SMTP.' },
       { status: 500 }
     );
   }
 }
+
