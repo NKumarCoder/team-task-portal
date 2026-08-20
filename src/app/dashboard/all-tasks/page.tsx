@@ -648,7 +648,7 @@ export default function AllTasksPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-28">
       {!selectedProject ? (
         // --- PROJECTS GRID VIEW ---
         <>
@@ -1129,10 +1129,10 @@ export default function AllTasksPage() {
             </div>
           ) : filteredTasks.length > 0 ? (
             <div className="space-y-4">
-              {/* Sticky Header Glass Table Container */}
-              <div className="glass-panel rounded-2xl overflow-hidden overflow-x-auto max-h-[60vh]">
+              {/* Sticky Header Glass Table Container with full vertical & horizontal accessibility */}
+              <div className="glass-panel rounded-2xl overflow-auto border border-card-border shadow-sm max-h-[calc(100vh-260px)] min-h-[300px]">
                 <table className="w-full border-collapse">
-                  <thead className="sticky top-0 z-10 bg-card/90 backdrop-blur-md shadow-sm border-b border-card-border">
+                  <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur-md shadow-sm border-b border-card-border">
                     {table.getHeaderGroups().map(headerGroup => (
                       <tr key={headerGroup.id}>
                         {headerGroup.headers.map(header => (
@@ -1169,25 +1169,48 @@ export default function AllTasksPage() {
                 </table>
               </div>
 
-              {/* Pagination controls */}
-              <div className="flex items-center justify-between px-2 py-1 select-none">
+              {/* Pagination controls with clear safe area */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 bg-card/40 border border-card-border rounded-xl backdrop-blur-md select-none">
                 <span className="text-xs text-muted-foreground font-medium">
-                  Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()} ({filteredTasks.length} tasks matching)
+                  Page {table.getState().pagination.pageIndex + 1} of {Math.max(1, table.getPageCount())} ({filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'} matching)
                 </span>
-                <div className="flex gap-2">
+                
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => table.previousPage()}
                     disabled={!table.getCanPreviousPage()}
-                    className="p-1.5 border border-border rounded-lg bg-card/50 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                    className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg bg-card/60 hover:bg-accent/50 text-xs font-semibold text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none transition-all shadow-sm"
+                    title="Previous Page"
                   >
-                    <ArrowLeft className="h-4 w-4" />
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Previous</span>
                   </button>
+
+                  {/* Interactive Page Number Buttons */}
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: Math.max(1, table.getPageCount()) }).map((_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => table.setPageIndex(idx)}
+                        className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          table.getState().pagination.pageIndex === idx
+                            ? 'bg-primary text-white shadow-md shadow-primary/25'
+                            : 'bg-card/40 hover:bg-accent/40 text-muted-foreground hover:text-foreground border border-border/50'
+                        }`}
+                      >
+                        {idx + 1}
+                      </button>
+                    ))}
+                  </div>
+
                   <button
                     onClick={() => table.nextPage()}
                     disabled={!table.getCanNextPage()}
-                    className="p-1.5 border border-border rounded-lg bg-card/50 hover:bg-accent/40 text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                    className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg bg-card/60 hover:bg-accent/50 text-xs font-semibold text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none transition-all shadow-sm"
+                    title="Next Page"
                   >
-                    <ArrowRight className="h-4 w-4" />
+                    <span className="hidden sm:inline">Next</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>

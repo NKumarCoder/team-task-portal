@@ -101,7 +101,7 @@ export default function DashboardLayout({
         <Navbar onMenuClick={() => setMobileOpen(true)} />
         
         {/* Main Content Area */}
-        <main className="flex-1 p-4 md:p-6 lg:p-8 overflow-y-auto overflow-x-hidden w-full min-w-0">
+        <main className="flex-1 p-4 md:p-6 lg:p-8 pb-24 md:pb-28 lg:pb-32 overflow-y-auto overflow-x-hidden w-full min-w-0">
           {children}
         </main>
       </div>
