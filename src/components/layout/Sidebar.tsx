@@ -17,7 +17,8 @@ import {
   UserCircle,
   ClipboardList,
   Folder,
-  Activity
+  Activity,
+  UserCheck
 } from 'lucide-react';
 import { cn } from '@/utils';
 
@@ -39,6 +40,7 @@ export default function Sidebar({ className, onClose }: SidebarProps) {
       { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
       { name: 'Projects', href: '/dashboard/projects', icon: Folder },
       { name: 'My Tasks', href: '/dashboard/my-tasks', icon: CheckSquare },
+      { name: 'Assigned by Me', href: '/dashboard/assigned-by-me', icon: UserCheck },
       { name: 'Kanban Board', href: '/dashboard/kanban', icon: FolderKanban },
       { name: 'Calendar View', href: '/dashboard/calendar', icon: Calendar },
     ];
