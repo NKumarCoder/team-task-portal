@@ -1649,6 +1649,55 @@ class DBService {
     };
   }
 
+  subscribeTasksAssignedBy(userEmail: string, callback: (tasks: Task[]) => void): () => void {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (!cleanEmail) {
+      callback([]);
+      return () => {};
+    }
+    console.log(`[dbService] Subscribing to tasks assigned by: ${cleanEmail} real-time...`);
+    let hasFired = false;
+    const localCallback = (data: Task[]) => {
+      hasFired = true;
+      callback(data);
+    };
+    const timer = setTimeout(() => {
+      if (!hasFired) {
+        console.warn(`[dbService] Tasks assigned-by (${cleanEmail}) first snapshot timed out. Returning empty array.`);
+        localCallback([]);
+      }
+    }, 3500);
+
+    let unsubscribe = () => {};
+    try {
+      const q = query(tasksCollection, where('isDeleted', '==', false));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const tasks: Task[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as Task;
+          if ((data.createdBy || '').toLowerCase() === cleanEmail) {
+            tasks.push({ ...data, id: docSnap.id } as Task);
+          }
+        });
+        clearTimeout(timer);
+        localCallback(tasks);
+      }, (error: any) => {
+        console.error(`[dbService] [Realtime] Tasks assigned-by subscription error for ${cleanEmail}:`, error);
+        clearTimeout(timer);
+        localCallback([]);
+      });
+    } catch (e) {
+      console.error(`[dbService] [Realtime] Tasks assigned-by subscription setup failed for ${cleanEmail}:`, e);
+      clearTimeout(timer);
+      localCallback([]);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
+
   subscribeMembers(callback: (members: Member[]) => void): () => void {
     console.log("[dbService] Subscribing to users (members) collection real-time...");
     let hasFired = false;
