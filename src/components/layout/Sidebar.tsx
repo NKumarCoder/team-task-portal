@@ -16,7 +16,8 @@ import {
   Calendar,
   UserCircle,
   ClipboardList,
-  Folder
+  Folder,
+  Activity
 } from 'lucide-react';
 import { cn } from '@/utils';
 
@@ -43,6 +44,7 @@ export default function Sidebar({ className, onClose }: SidebarProps) {
     ];
 
     if (!isEmployee) {
+      items.push({ name: 'Team Workload', href: '/dashboard/workload', icon: Activity });
       items.push({ name: 'All Tasks', href: '/dashboard/all-tasks', icon: ClipboardList });
       items.push({ name: 'Team Members', href: '/dashboard/team', icon: Users });
       items.push({ name: 'Reports', href: '/dashboard/reports', icon: BarChart3 });

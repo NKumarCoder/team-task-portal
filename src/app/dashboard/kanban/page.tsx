@@ -16,7 +16,9 @@ import {
   Layers,
   ArrowRight,
   ShieldAlert,
-  Lock
+  Lock,
+  Users,
+  UserCheck
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
@@ -45,6 +47,9 @@ export default function KanbanPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // View Scope State: Super Admin can toggle between My Tasks and All Tasks (defaults to My Tasks)
+  const [showAllTasks, setShowAllTasks] = useState(false);
+
   // Filters State
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProject, setSelectedProject] = useState('all');
@@ -66,6 +71,7 @@ export default function KanbanPage() {
   const [maxScrollPosition, setMaxScrollPosition] = useState(0);
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
+  const isSuperAdmin = user?.role === 'SuperAdmin';
   const isEmployee = user?.role === 'Member';
 
   // Read tasks in real-time
@@ -103,8 +109,10 @@ export default function KanbanPage() {
   // Derived Filtered Tasks
   const filteredTasks = useMemo(() => {
     return tasks.filter(task => {
-      // Access Control: Employee can ONLY view their own assigned tasks
-      if (isEmployee && !isUserAssignedToTask(task, user?.email)) {
+      // Task Scope: Super Admin can toggle between All Tasks and My Tasks.
+      // Default (and all other users) only shows tasks assigned to the logged-in user.
+      const shouldShowAll = isSuperAdmin && showAllTasks;
+      if (!shouldShowAll && !isUserAssignedToTask(task, user?.email)) {
         return false;
       }
 
@@ -132,7 +140,7 @@ export default function KanbanPage() {
 
       return true;
     });
-  }, [tasks, searchQuery, selectedProject, selectedEmployee, selectedPriority, isEmployee, user]);
+  }, [tasks, searchQuery, selectedProject, selectedEmployee, selectedPriority, isSuperAdmin, showAllTasks, user]);
 
   // Drag and Drop Handlers
   const handleDragStart = (e: React.DragEvent, taskId: string) => {
@@ -240,6 +248,30 @@ export default function KanbanPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {isSuperAdmin && (
+            <button
+              type="button"
+              onClick={() => setShowAllTasks(prev => !prev)}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm ${
+                showAllTasks
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'border border-card-border bg-background/50 text-muted-foreground hover:text-foreground hover:bg-accent/60'
+              }`}
+            >
+              {showAllTasks ? (
+                <>
+                  <UserCheck className="h-3.5 w-3.5" />
+                  Show My Tasks
+                </>
+              ) : (
+                <>
+                  <Users className="h-3.5 w-3.5" />
+                  Show All Tasks
+                </>
+              )}
+            </button>
+          )}
+
           <button
             onClick={handleExportCSV}
             className="flex items-center gap-1.5 px-4 py-2 border border-card-border bg-background/50 rounded-xl text-xs font-bold text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-all cursor-pointer shadow-sm"
