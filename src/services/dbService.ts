@@ -13,7 +13,8 @@ import {
   orderBy,
   limit,
   collection,
-  deleteField
+  deleteField,
+  writeBatch
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../firebase/config';
 import { 
@@ -1910,6 +1911,9 @@ class DBService {
       createdAt: todo.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+    if (todo.note && typeof todo.note === 'string' && todo.note.trim()) {
+      cleanTodo.note = todo.note.trim();
+    }
     if (todo.dueDate && typeof todo.dueDate === 'string' && todo.dueDate.trim()) {
       cleanTodo.dueDate = todo.dueDate.trim();
     }
@@ -1935,6 +1939,13 @@ class DBService {
       updatedAt: new Date().toISOString()
     };
     if (updates.title !== undefined) cleanUpdates.title = updates.title.trim();
+    if (updates.note !== undefined) {
+      if (updates.note && typeof updates.note === 'string' && updates.note.trim()) {
+        cleanUpdates.note = updates.note.trim();
+      } else {
+        cleanUpdates.note = deleteField();
+      }
+    }
     if (updates.completed !== undefined) cleanUpdates.completed = Boolean(updates.completed);
     if (updates.completedAt !== undefined) {
       if (updates.completedAt) cleanUpdates.completedAt = updates.completedAt;
@@ -1961,6 +1972,35 @@ class DBService {
     await deleteDoc(docRef);
     const end = performance.now();
     console.log(`[dbService] [Firestore] Todo deleted (Time: ${(end - start).toFixed(2)}ms)`);
+  }
+
+  async deleteAllTodos(userEmail: string, completed: boolean): Promise<number> {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (!cleanEmail) return 0;
+    const start = performance.now();
+    
+    // Scoped specifically to current user's todos and matching completed state
+    const q = query(
+      todosCollection,
+      where('userId', '==', cleanEmail),
+      where('completed', '==', completed)
+    );
+    const snap = await getDocs(q);
+    if (snap.empty) return 0;
+
+    // Use batches in chunks of 450 to stay safely under Firestore's 500-op limit
+    const docs = snap.docs;
+    const chunkSize = 450;
+    for (let i = 0; i < docs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      const chunk = docs.slice(i, i + chunkSize);
+      chunk.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+
+    const end = performance.now();
+    console.log(`[dbService] [Firestore] Batch deleted ${docs.length} ${completed ? 'completed' : 'active'} todos for ${cleanEmail} (Time: ${(end - start).toFixed(2)}ms)`);
+    return docs.length;
   }
 
   subscribeTodos(userEmail: string, callback: (todos: TodoItem[]) => void): () => void {

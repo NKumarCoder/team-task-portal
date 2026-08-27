@@ -462,6 +462,67 @@ export function getProjectMemberWorkload(
   };
 }
 
+/**
+ * Calculates elapsed age in calendar days from an ISO date string to today.
+ * Examples:
+ * - Created today -> 0 days
+ * - Created yesterday -> 1 day
+ * - Created 2 days ago -> 2 days
+ * - Created 3 days ago -> 3 days
+ */
+export function calculateTodoAgeInDays(createdAt: string): number {
+  if (!createdAt) return 0;
+  const createdDate = new Date(createdAt);
+  if (isNaN(createdDate.getTime())) return 0;
 
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const createdMidnight = new Date(createdDate.getFullYear(), createdDate.getMonth(), createdDate.getDate());
 
+  const diffMs = todayMidnight.getTime() - createdMidnight.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  return Math.max(0, diffDays);
+}
 
+export type TodoAgeSeverity = 'normal' | 'warning' | 'critical';
+
+export interface TodoAgeInfo {
+  ageInDays: number;
+  severity: TodoAgeSeverity;
+  badgeText: string;
+  badgeIcon: string;
+}
+
+/**
+ * Evaluates the aging status according to exact boundary rules:
+ * - Age <= 2 days -> normal
+ * - Age > 2 and Age <= 10 days -> warning (orange)
+ * - Age > 10 days -> critical (red)
+ */
+export function getTodoAgeInfo(createdAt: string): TodoAgeInfo {
+  const age = calculateTodoAgeInDays(createdAt);
+  let severity: TodoAgeSeverity = 'normal';
+  if (age > 10) {
+    severity = 'critical';
+  } else if (age > 2) {
+    severity = 'warning';
+  }
+
+  let badgeText = '';
+  if (age === 0) {
+    badgeText = 'Today';
+  } else if (age === 1) {
+    badgeText = '1 day old';
+  } else {
+    badgeText = `${age} days old`;
+  }
+
+  const badgeIcon = severity === 'critical' ? '🔴' : severity === 'warning' ? '🟠' : '';
+
+  return {
+    ageInDays: age,
+    severity,
+    badgeText,
+    badgeIcon,
+  };
+}
