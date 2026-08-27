@@ -309,22 +309,27 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
                     transition={{ duration: 0.15 }}
                     className="absolute right-0 mt-2.5 w-56 glass-panel bg-card/98 rounded-2xl border border-card-border shadow-xl z-50 py-1.5 overflow-hidden animate-in fade-in zoom-in-95 duration-150"
                   >
-                    <div className="px-4 py-2 border-b border-card-border shrink-0">
-                      <p className="text-xs font-bold truncate text-foreground">{user.displayName}</p>
+                    <div className="px-4 py-2.5 border-b border-card-border shrink-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-bold truncate text-foreground">{user.displayName}</p>
+                        <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 shrink-0">
+                          {user.role === 'SuperAdmin' ? 'Super Admin' : user.role}
+                        </span>
+                      </div>
                       <p className="text-[10px] text-muted-foreground truncate mt-0.5">{user.email}</p>
                     </div>
                     <div className="p-1 space-y-0.5">
                       <button 
                         onClick={() => { setShowProfileMenu(false); router.push('/dashboard/profile'); }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent/40 cursor-pointer text-left"
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent/40 cursor-pointer text-left transition-colors"
                       >
                         <User className="h-4 w-4 text-muted-foreground/80 shrink-0" />
-                        My Profile
+                        Profile
                       </button>
                       {user.role === 'SuperAdmin' && (
                         <button 
                           onClick={() => { setShowProfileMenu(false); router.push('/dashboard/settings'); }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent/40 cursor-pointer text-left"
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground rounded-lg hover:bg-accent/40 cursor-pointer text-left transition-colors"
                         >
                           <Settings className="h-4 w-4 text-muted-foreground/80 shrink-0" />
                           Settings
@@ -334,10 +339,10 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
                     <div className="p-1 border-t border-card-border mt-1">
                       <button 
                         onClick={() => logout()}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-bold text-destructive hover:bg-destructive/10 rounded-lg cursor-pointer"
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-bold text-destructive hover:bg-destructive/10 rounded-lg cursor-pointer transition-colors"
                       >
                         <LogOut className="h-4 w-4 shrink-0" />
-                        Logout
+                        Sign Out
                       </button>
                     </div>
                   </motion.div>

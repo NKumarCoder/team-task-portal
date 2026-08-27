@@ -1172,8 +1172,8 @@ export default function AllTasksPage() {
         /* --- CONSOLIDATED ALL TASKS TABLE VIEW (Default) OR DRILLED-DOWN PROJECT TABLE --- */
         filteredTasks.length > 0 ? (
           <div className="space-y-4">
-            {/* Sticky Header Glass Table Container with full vertical & horizontal accessibility */}
-            <div className="glass-panel rounded-2xl overflow-auto border border-card-border shadow-sm max-h-[calc(100vh-260px)] min-h-[300px]">
+            {/* Natural Height Table Container with responsive horizontal scroll only */}
+            <div className="glass-panel rounded-2xl overflow-x-auto border border-card-border shadow-sm">
               <table className="w-full border-collapse">
                 <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur-md shadow-sm border-b border-card-border">
                   {table.getHeaderGroups().map(headerGroup => (
@@ -1213,7 +1213,7 @@ export default function AllTasksPage() {
             </div>
 
             {/* Pagination controls with clear safe area */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 bg-card/40 border border-card-border rounded-xl backdrop-blur-md select-none">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3.5 bg-card/40 border border-card-border rounded-xl backdrop-blur-md select-none pr-4 md:pr-24">
               <span className="text-xs text-muted-foreground font-medium">
                 Page {table.getState().pagination.pageIndex + 1} of {Math.max(1, table.getPageCount())} ({filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'} matching)
               </span>
