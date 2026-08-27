@@ -71,12 +71,37 @@ class DBService {
     
     const queryPromise = (async () => {
       const querySnapshot = await getDocs(usersCollection);
-      const members: Member[] = [];
+      const membersMap = new Map<string, Member>();
+
       querySnapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        members.push({ ...data, id: docSnap.id } as Member);
+        const member = { ...data, id: docSnap.id } as Member;
+        const key = (member.email || member.uid || docSnap.id).toLowerCase().trim();
+
+        if (!membersMap.has(key)) {
+          membersMap.set(key, member);
+        } else {
+          // Consolidate duplicate document representing the same user account
+          const existing = membersMap.get(key)!;
+          const merged: Member = {
+            ...existing,
+            ...member,
+            uid: member.uid || existing.uid,
+            // Prefer the Auth UID docId if available
+            id: (member.uid && docSnap.id === member.uid) ? docSnap.id : existing.id,
+            // Preserve highest privilege role if discrepancies exist
+            role: (existing.role === 'SuperAdmin' || member.role === 'SuperAdmin')
+              ? 'SuperAdmin'
+              : (existing.role === 'Admin' || member.role === 'Admin')
+              ? 'Admin'
+              : member.role || existing.role || 'Member',
+            avatarColor: member.avatarColor || existing.avatarColor,
+            createdDate: existing.createdDate || member.createdDate,
+          };
+          membersMap.set(key, merged);
+        }
       });
-      return members;
+      return Array.from(membersMap.values());
     })();
 
     try {
@@ -95,10 +120,20 @@ class DBService {
     console.log("[dbService] Adding team member:", member.email);
     const start = performance.now();
     
-    const docRef = await addDoc(usersCollection, member);
+    const cleanEmail = member.email.toLowerCase().trim();
+    // Use UID if available or clean email key to avoid duplicate random doc IDs
+    const docId = member.uid || cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    const docRef = doc(usersCollection, docId);
+    
+    await setDoc(docRef, {
+      ...member,
+      email: cleanEmail,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+
     const end = performance.now();
     console.log(`[dbService] [Firestore] Member added in users collection (Execution Time: ${(end - start).toFixed(2)}ms)`);
-    return { id: docRef.id, ...member };
+    return { id: docId, ...member, email: cleanEmail };
   }
 
   async updateMemberProfile(email: string, updates: Partial<Member>): Promise<void> {

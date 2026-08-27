@@ -125,7 +125,7 @@ Login Link: ${window.location.origin}/login`;
       };
 
       const created = await dbService.addMember(newMember);
-      setMembers(prev => [...prev, created]);
+      setMembers(prev => [...prev.filter(m => m.email.toLowerCase() !== created.email.toLowerCase()), created]);
       setIsModalOpen(false);
       reset();
       toast.success(`Team member added successfully! Temp Password: ${generatedPassword}`);
