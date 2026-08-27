@@ -196,3 +196,16 @@ export interface Project {
   createdDate: string;
   createdBy: string;
 }
+
+export interface TodoItem {
+  id?: string;
+  userId: string; // Email of owner (current authenticated user)
+  title: string;
+  completed: boolean;
+  completedAt?: string; // ISO string
+  dueDate?: string; // ISO date string e.g. "2026-08-28"
+  createdAt: string; // ISO Date String
+  updatedAt: string; // ISO Date String
+  convertedToTaskId?: string; // Formal Task ID e.g. "TASK-000012"
+  convertedAt?: string; // ISO Date String
+}
