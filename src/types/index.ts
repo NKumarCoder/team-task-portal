@@ -201,6 +201,7 @@ export interface TodoItem {
   id?: string;
   userId: string; // Email of owner (current authenticated user)
   title: string;
+  note?: string; // Optional lightweight note / remarks
   completed: boolean;
   completedAt?: string; // ISO string
   dueDate?: string; // ISO date string e.g. "2026-08-28"
