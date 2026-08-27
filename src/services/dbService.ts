@@ -12,7 +12,8 @@ import {
   deleteDoc,
   orderBy,
   limit,
-  collection
+  collection,
+  deleteField
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../firebase/config';
 import { 
@@ -23,9 +24,10 @@ import {
   commentsCollection,
   notificationsCollection,
   activitiesCollection,
-  projectsCollection
+  projectsCollection,
+  todosCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee } from '../types';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem } from '../types';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients } from '../utils';
 import { MAX_ASSIGNEES } from '../constants';
 
@@ -69,12 +71,37 @@ class DBService {
     
     const queryPromise = (async () => {
       const querySnapshot = await getDocs(usersCollection);
-      const members: Member[] = [];
+      const membersMap = new Map<string, Member>();
+
       querySnapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        members.push({ ...data, id: docSnap.id } as Member);
+        const member = { ...data, id: docSnap.id } as Member;
+        const key = (member.email || member.uid || docSnap.id).toLowerCase().trim();
+
+        if (!membersMap.has(key)) {
+          membersMap.set(key, member);
+        } else {
+          // Consolidate duplicate document representing the same user account
+          const existing = membersMap.get(key)!;
+          const merged: Member = {
+            ...existing,
+            ...member,
+            uid: member.uid || existing.uid,
+            // Prefer the Auth UID docId if available
+            id: (member.uid && docSnap.id === member.uid) ? docSnap.id : existing.id,
+            // Preserve highest privilege role if discrepancies exist
+            role: (existing.role === 'SuperAdmin' || member.role === 'SuperAdmin')
+              ? 'SuperAdmin'
+              : (existing.role === 'Admin' || member.role === 'Admin')
+              ? 'Admin'
+              : member.role || existing.role || 'Member',
+            avatarColor: member.avatarColor || existing.avatarColor,
+            createdDate: existing.createdDate || member.createdDate,
+          };
+          membersMap.set(key, merged);
+        }
       });
-      return members;
+      return Array.from(membersMap.values());
     })();
 
     try {
@@ -93,10 +120,20 @@ class DBService {
     console.log("[dbService] Adding team member:", member.email);
     const start = performance.now();
     
-    const docRef = await addDoc(usersCollection, member);
+    const cleanEmail = member.email.toLowerCase().trim();
+    // Use UID if available or clean email key to avoid duplicate random doc IDs
+    const docId = member.uid || cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    const docRef = doc(usersCollection, docId);
+    
+    await setDoc(docRef, {
+      ...member,
+      email: cleanEmail,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+
     const end = performance.now();
     console.log(`[dbService] [Firestore] Member added in users collection (Execution Time: ${(end - start).toFixed(2)}ms)`);
-    return { id: docRef.id, ...member };
+    return { id: docId, ...member, email: cleanEmail };
   }
 
   async updateMemberProfile(email: string, updates: Partial<Member>): Promise<void> {
@@ -1838,6 +1875,130 @@ class DBService {
       unsubscribe();
     };
   }
+
+  // --- TODOS (LIGHTWEIGHT PERSONAL WORKPAD) ---
+  async getTodos(userEmail: string): Promise<TodoItem[]> {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (!cleanEmail) return [];
+    const start = performance.now();
+    const queryPromise = (async () => {
+      const q = query(todosCollection, where('userId', '==', cleanEmail));
+      const querySnapshot = await getDocs(q);
+      const todos: TodoItem[] = [];
+      querySnapshot.forEach((docSnap) => {
+        todos.push({ ...docSnap.data(), id: docSnap.id } as TodoItem);
+      });
+      return todos;
+    })();
+    try {
+      const todos = await withTimeout(queryPromise, 3000, []);
+      const end = performance.now();
+      console.log(`[dbService] [Firestore] Collection: todos, Count: ${todos.length}, Time: ${(end - start).toFixed(2)}ms`);
+      return todos.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } catch (e) {
+      console.error("[dbService] Error getting todos:", e);
+      return [];
+    }
+  }
+
+  async addTodo(todo: Omit<TodoItem, 'id'>): Promise<TodoItem> {
+    const start = performance.now();
+    const cleanTodo: Record<string, any> = {
+      userId: todo.userId.toLowerCase().trim(),
+      title: todo.title.trim(),
+      completed: Boolean(todo.completed),
+      createdAt: todo.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    if (todo.dueDate && typeof todo.dueDate === 'string' && todo.dueDate.trim()) {
+      cleanTodo.dueDate = todo.dueDate.trim();
+    }
+    if (todo.completedAt && typeof todo.completedAt === 'string') {
+      cleanTodo.completedAt = todo.completedAt;
+    }
+    if (todo.convertedToTaskId && typeof todo.convertedToTaskId === 'string') {
+      cleanTodo.convertedToTaskId = todo.convertedToTaskId;
+    }
+    if (todo.convertedAt && typeof todo.convertedAt === 'string') {
+      cleanTodo.convertedAt = todo.convertedAt;
+    }
+    const docRef = await addDoc(todosCollection, cleanTodo);
+    const end = performance.now();
+    console.log(`[dbService] [Firestore] Todo added (Time: ${(end - start).toFixed(2)}ms)`);
+    return { id: docRef.id, ...cleanTodo } as TodoItem;
+  }
+
+  async updateTodo(id: string, updates: Partial<TodoItem>): Promise<void> {
+    const start = performance.now();
+    const docRef = doc(db, 'todos', id);
+    const cleanUpdates: Record<string, any> = {
+      updatedAt: new Date().toISOString()
+    };
+    if (updates.title !== undefined) cleanUpdates.title = updates.title.trim();
+    if (updates.completed !== undefined) cleanUpdates.completed = Boolean(updates.completed);
+    if (updates.completedAt !== undefined) {
+      if (updates.completedAt) cleanUpdates.completedAt = updates.completedAt;
+      else cleanUpdates.completedAt = deleteField();
+    }
+    if (updates.dueDate !== undefined) {
+      if (updates.dueDate && updates.dueDate.trim()) cleanUpdates.dueDate = updates.dueDate.trim();
+      else cleanUpdates.dueDate = deleteField();
+    }
+    if (updates.convertedToTaskId !== undefined) {
+      if (updates.convertedToTaskId) cleanUpdates.convertedToTaskId = updates.convertedToTaskId;
+    }
+    if (updates.convertedAt !== undefined) {
+      if (updates.convertedAt) cleanUpdates.convertedAt = updates.convertedAt;
+    }
+    await updateDoc(docRef, cleanUpdates);
+    const end = performance.now();
+    console.log(`[dbService] [Firestore] Todo updated (Time: ${(end - start).toFixed(2)}ms)`);
+  }
+
+  async deleteTodo(id: string): Promise<void> {
+    const start = performance.now();
+    const docRef = doc(db, 'todos', id);
+    await deleteDoc(docRef);
+    const end = performance.now();
+    console.log(`[dbService] [Firestore] Todo deleted (Time: ${(end - start).toFixed(2)}ms)`);
+  }
+
+  subscribeTodos(userEmail: string, callback: (todos: TodoItem[]) => void): () => void {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (!cleanEmail || !isFirebaseConfigured()) {
+      callback([]);
+      return () => {};
+    }
+    const timer = setTimeout(() => {
+      console.warn("[dbService] [Realtime] Todos subscription timeout.");
+      callback([]);
+    }, 4000);
+    let unsubscribe = () => {};
+    try {
+      const q = query(todosCollection, where('userId', '==', cleanEmail));
+      unsubscribe = onSnapshot(q, (snapshot) => {
+        const list: TodoItem[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as TodoItem);
+        });
+        clearTimeout(timer);
+        callback(list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+      }, (error) => {
+        console.error("[dbService] Todos subscription error:", error);
+        clearTimeout(timer);
+        callback([]);
+      });
+    } catch (e) {
+      console.error("[dbService] Todos subscription setup failed:", e);
+      clearTimeout(timer);
+      callback([]);
+    }
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
 }
 
 export const dbService = new DBService();
+

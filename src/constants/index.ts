@@ -248,4 +248,5 @@ export const FIREBASE_COLLECTIONS = {
   COMMENTS: 'taskComments',
   NOTIFICATIONS: 'notifications',
   ACTIVITIES: 'taskActivities',
+  TODOS: 'todos',
 } as const;

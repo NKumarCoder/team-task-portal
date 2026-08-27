@@ -229,27 +229,33 @@ class AuthService {
       const role: UserRole = isSuperAdmin ? 'SuperAdmin' : 'Member';
       const avatarColor = '#' + Math.floor(Math.random() * 16777215).toString(16);
 
-      // Create user document in Firestore
-      const newUser: User = {
+      // Check if user document already exists in Firestore for this email
+      const cleanEmail = email.toLowerCase().trim();
+      const existingUserDoc = await this.findUserDocByEmail(cleanEmail);
+      const userDocRef = existingUserDoc 
+        ? doc(usersCollection, existingUserDoc.id) 
+        : doc(usersCollection, firebaseUser.uid);
+
+      const userPayload = {
         uid: firebaseUser.uid,
         name: displayName,
-        email: email,
-        role: role,
+        email: cleanEmail,
+        role: existingUserDoc?.data()?.role || role,
         isActive: true,
-        avatarColor: avatarColor,
-        createdAt: new Date().toISOString(),
-        createdBy: 'self',
+        avatarColor: existingUserDoc?.data()?.avatarColor || avatarColor,
+        createdAt: existingUserDoc?.data()?.createdAt || existingUserDoc?.data()?.createdDate || new Date().toISOString(),
+        createdBy: existingUserDoc?.data()?.createdBy || 'self',
         updatedAt: new Date().toISOString()
       };
 
-      await setDoc(doc(usersCollection, firebaseUser.uid), newUser);
+      await setDoc(userDocRef, userPayload, { merge: true });
 
       return {
         uid: firebaseUser.uid,
-        email: email,
+        email: cleanEmail,
         displayName,
-        role,
-        avatarColor
+        role: userPayload.role as UserRole,
+        avatarColor: userPayload.avatarColor
       };
     } catch (err: any) {
       throw new Error(err.message || 'Signup failed');

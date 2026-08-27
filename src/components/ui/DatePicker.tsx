@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from 'lucide-react';
 
 interface DatePickerProps {
   value?: string; // Stored in YYYY-MM-DD
@@ -13,6 +13,8 @@ interface DatePickerProps {
   minDate?: string; // Optional minimum selectable date in YYYY-MM-DD
   align?: 'left' | 'right';
   className?: string;
+  variant?: 'default' | 'pill';
+  label?: string; // Optional custom label for pill mode, e.g. "+ Due Date"
 }
 
 const MONTH_NAMES = [
@@ -31,6 +33,8 @@ export default function DatePicker({
   minDate,
   align = 'left',
   className = '',
+  variant = 'default',
+  label = '+ Due Date',
 }: DatePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -102,6 +106,21 @@ export default function DatePicker({
     }
     return value;
   }, [value]);
+
+  // Formatted compact display for pills (e.g. "Aug 30")
+  const displayFormattedDate = useMemo(() => {
+    if (!value) return '';
+    const parts = value.split('-');
+    if (parts.length === 3) {
+      const monthIdx = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      if (monthIdx >= 0 && monthIdx < 12) {
+        const monthShort = MONTH_NAMES[monthIdx].slice(0, 3);
+        return `${monthShort} ${day}`;
+      }
+    }
+    return displayValue;
+  }, [value, displayValue]);
 
   // Format date object to YYYY-MM-DD
   const formatToYMD = (d: Date): string => {
@@ -196,27 +215,68 @@ export default function DatePicker({
   }, [viewDate, value]);
 
   return (
-    <div ref={containerRef} className={`relative w-full ${className}`}>
+    <div ref={containerRef} className={`relative ${variant === 'pill' ? 'inline-block' : 'w-full'} ${className}`}>
       {/* Input Trigger */}
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => !disabled && setIsOpen(!isOpen)}
-        className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs flex items-center justify-between transition-all select-none cursor-pointer ${
-          disabled ? 'opacity-60 cursor-not-allowed' : 'hover:border-primary/50'
-        } ${
-          hasError
-            ? 'border-destructive focus:ring-2 focus:ring-destructive/25'
-            : isOpen
-            ? 'border-primary ring-2 ring-primary/25'
-            : 'border-border focus:border-primary'
-        }`}
-      >
-        <span className={displayValue ? 'text-foreground font-medium' : 'text-muted-foreground font-normal'}>
-          {displayValue || placeholder}
-        </span>
-        <CalendarIcon className={`h-3.5 w-3.5 transition-colors ${isOpen ? 'text-primary' : 'text-muted-foreground'}`} />
-      </button>
+      {variant === 'pill' ? (
+        value ? (
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-primary/30 bg-primary/10 text-primary text-xs font-bold transition-all select-none shadow-2xs whitespace-nowrap">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => !disabled && setIsOpen(!isOpen)}
+              className="flex items-center gap-1.5 hover:underline cursor-pointer"
+            >
+              <CalendarIcon className="h-3.5 w-3.5" />
+              <span>{displayFormattedDate}</span>
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange?.('');
+                setIsOpen(false);
+              }}
+              className="p-0.5 rounded-full hover:bg-primary/20 text-primary/80 hover:text-primary transition-colors cursor-pointer ml-0.5"
+              title="Clear date"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => !disabled && setIsOpen(!isOpen)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-card-border bg-card/50 hover:bg-accent/50 text-xs font-bold text-muted-foreground hover:text-foreground transition-all cursor-pointer select-none whitespace-nowrap shadow-2xs ${
+              isOpen ? 'border-primary/60 text-primary bg-primary/10 shadow-xs' : ''
+            }`}
+          >
+            <CalendarIcon className="h-3.5 w-3.5 text-primary/70" />
+            <span>{label}</span>
+          </button>
+        )
+      ) : (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => !disabled && setIsOpen(!isOpen)}
+          className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs flex items-center justify-between transition-all select-none cursor-pointer ${
+            disabled ? 'opacity-60 cursor-not-allowed' : 'hover:border-primary/50'
+          } ${
+            hasError
+              ? 'border-destructive focus:ring-2 focus:ring-destructive/25'
+              : isOpen
+              ? 'border-primary ring-2 ring-primary/25'
+              : 'border-border focus:border-primary'
+          }`}
+        >
+          <span className={displayValue ? 'text-foreground font-medium' : 'text-muted-foreground font-normal'}>
+            {displayValue || placeholder}
+          </span>
+          <CalendarIcon className={`h-3.5 w-3.5 transition-colors ${isOpen ? 'text-primary' : 'text-muted-foreground'}`} />
+        </button>
+      )}
 
       {/* Calendar Popup Dropdown */}
       <AnimatePresence>

@@ -44,9 +44,11 @@ interface CreateTaskDialogProps {
   onClose: () => void;
   onSuccess: (task: Task) => void;
   taskToEdit?: Task; // If provided, runs Edit mode
+  initialTitle?: string; // If provided, pre-populates title (e.g. from To Do conversion)
+  initialDueDate?: string; // If provided, pre-populates expected completion date
 }
 
-export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdit }: CreateTaskDialogProps) {
+export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdit, initialTitle, initialDueDate }: CreateTaskDialogProps) {
   const { user } = useAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -188,17 +190,17 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       setSelectedFiles([]);
       reset({
         projectName: '',
-        title: '',
+        title: initialTitle || '',
         description: '',
         assigneeEmails: [],
         priority: 'medium',
         module: '',
         startDate: '',
-        expectedCompletionDate: '',
+        expectedCompletionDate: initialDueDate ? (initialDueDate.includes('T') ? initialDueDate.split('T')[0] : initialDueDate) : '',
         remarks: '',
       });
     }
-  }, [isOpen, taskToEdit, reset]);
+  }, [isOpen, taskToEdit, initialTitle, initialDueDate, reset]);
 
   const onSubmit = async (values: TaskFormValues) => {
     setSaving(true);

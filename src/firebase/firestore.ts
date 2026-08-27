@@ -10,3 +10,4 @@ export const commentsCollection = collection(db, 'taskComments');
 export const notificationsCollection = collection(db, 'notifications');
 export const activitiesCollection = collection(db, 'taskActivities');
 export const projectsCollection = collection(db, 'projects');
+export const todosCollection = collection(db, 'todos');
