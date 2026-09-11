@@ -22,6 +22,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { formatDate, getTaskAssignees, getTaskAssigneeNames } from '@/utils';
+import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 
 export default function ProjectsPage() {
   const { user, hasPermission } = useAuth();
@@ -32,6 +33,8 @@ export default function ProjectsPage() {
   const [newProjectName, setNewProjectName] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -299,7 +302,17 @@ export default function ProjectsPage() {
                             <tbody>
                               {stats.tasksList.map((task) => (
                                 <tr key={task.id} className="border-b border-card-border/20 last:border-0 hover:bg-accent/10 transition-colors">
-                                  <td className="py-3 font-semibold text-primary">{task.taskId}</td>
+                                  <td 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedTask(task);
+                                      setIsDetailOpen(true);
+                                    }}
+                                    className="py-3 font-semibold text-primary cursor-pointer hover:underline"
+                                    title="Click to view task details"
+                                  >
+                                    {task.taskId}
+                                  </td>
                                   <td className="py-3 font-semibold text-foreground">{task.title}</td>
                                   <td className="py-3 text-muted-foreground">{task.module}</td>
                                   <td className="py-3">
@@ -411,6 +424,13 @@ export default function ProjectsPage() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Task Details Side Drawer */}
+      <TaskDetailDrawer
+        isOpen={isDetailOpen}
+        onClose={() => setIsDetailOpen(false)}
+        task={selectedTask}
+      />
     </div>
   );
 }

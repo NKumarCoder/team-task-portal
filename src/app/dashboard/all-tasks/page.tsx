@@ -153,6 +153,7 @@ export default function AllTasksPage() {
       const matchesGlobal =
         task.title.toLowerCase().includes(globalFilter.toLowerCase()) ||
         task.projectName.toLowerCase().includes(globalFilter.toLowerCase()) ||
+        (task.module || '').toLowerCase().includes(globalFilter.toLowerCase()) ||
         task.description.toLowerCase().includes(globalFilter.toLowerCase()) ||
         task.taskId.toLowerCase().includes(globalFilter.toLowerCase()) ||
         getTaskAssignees(task).some(a => a.name.toLowerCase().includes(globalFilter.toLowerCase()) || a.id.toLowerCase().includes(globalFilter.toLowerCase())) ||
@@ -296,17 +297,19 @@ export default function AllTasksPage() {
       return;
     }
 
-    const headers = ['Task ID', 'Title', 'Project', 'Assigned To', 'Priority', 'Status', 'Due Date', 'Created By', 'Created Date'];
+    const headers = ['Task ID', 'Project', 'Module', 'Task Title', 'Assigned To', 'Priority', 'Status', 'Due Date', 'Created Date', 'Last Updated Date', 'Created By'];
     const rows = list.map(t => [
       t.taskId,
-      `"${t.title.replace(/"/g, '""')}"`,
       `"${t.projectName.replace(/"/g, '""')}"`,
+      `"${(t.module || '—').replace(/"/g, '""')}"`,
+      `"${t.title.replace(/"/g, '""')}"`,
       `"${getTaskAssigneeNames(t).replace(/"/g, '""')}"`,
       t.priority.toUpperCase(),
       t.status.toUpperCase(),
       formatDate(t.expectedCompletionDate),
-      t.createdBy,
-      formatDate(t.createdDate)
+      t.createdDate ? formatDate(t.createdDate) : '—',
+      t.updatedDate ? formatDate(t.updatedDate) : '—',
+      t.createdBy
     ]);
 
     const csvContent = [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
@@ -349,14 +352,16 @@ export default function AllTasksPage() {
           <table border="1">
             <tr style="background-color: #4F46E5; color: #FFFFFF; font-weight: bold;">
               <td>Task ID</td>
-              <td>Title</td>
               <td>Project</td>
+              <td>Module</td>
+              <td>Task Title</td>
               <td>Assigned To</td>
               <td>Priority</td>
               <td>Status</td>
               <td>Due Date</td>
-              <td>Created By</td>
               <td>Created Date</td>
+              <td>Last Updated Date</td>
+              <td>Created By</td>
             </tr>
     `;
 
@@ -364,14 +369,16 @@ export default function AllTasksPage() {
       excelContent += `
         <tr>
           <td>${t.taskId}</td>
-          <td>${t.title}</td>
           <td>${t.projectName}</td>
+          <td>${t.module || '—'}</td>
+          <td>${t.title}</td>
           <td>${getTaskAssigneeNames(t)}</td>
           <td>${t.priority.toUpperCase()}</td>
           <td>${t.status.toUpperCase()}</td>
           <td>${formatDate(t.expectedCompletionDate)}</td>
+          <td>${t.createdDate ? formatDate(t.createdDate) : '—'}</td>
+          <td>${t.updatedDate ? formatDate(t.updatedDate) : '—'}</td>
           <td>${t.createdBy}</td>
-          <td>${formatDate(t.createdDate)}</td>
         </tr>
       `;
     });
@@ -474,12 +481,45 @@ export default function AllTasksPage() {
         )
       },
       {
-        accessorKey: 'title',
-        header: () => <span className="font-bold text-xs tracking-wider uppercase">Task Title</span>,
+        accessorKey: 'module',
+        header: ({ column }) => (
+          <button
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
+          >
+            Module
+            <ArrowUpDown className="h-3 w-3" />
+          </button>
+        ),
         cell: ({ row }) => (
-          <div className="max-w-xs md:max-w-md truncate">
-            <p className="font-extrabold text-sm text-foreground line-clamp-1">{row.original.title}</p>
-            <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">{row.original.description}</p>
+          <span className="text-xs font-semibold text-muted-foreground whitespace-nowrap truncate max-w-[120px] block">
+            {row.original.module?.trim() ? row.original.module : '—'}
+          </span>
+        )
+      },
+      {
+        accessorKey: 'title',
+        header: () => (
+          <div className="w-[380px] min-w-[380px] max-w-[380px]">
+            <span className="font-bold text-xs tracking-wider uppercase">Task Title</span>
+          </div>
+        ),
+        cell: ({ row }) => (
+          <div className="w-[380px] min-w-[380px] max-w-[380px] overflow-hidden" title={row.original.title}>
+            <p
+              className="font-extrabold text-sm text-foreground truncate block"
+              title={row.original.title}
+            >
+              {row.original.title}
+            </p>
+            {row.original.description ? (
+              <p
+                className="text-[11px] text-muted-foreground truncate block mt-0.5"
+                title={row.original.description}
+              >
+                {row.original.description}
+              </p>
+            ) : null}
           </div>
         )
       },
@@ -558,6 +598,40 @@ export default function AllTasksPage() {
         ),
         cell: ({ row }) => (
           <span className="text-xs font-semibold whitespace-nowrap text-muted-foreground">{formatDate(row.original.expectedCompletionDate)}</span>
+        )
+      },
+      {
+        accessorKey: 'createdDate',
+        header: ({ column }) => (
+          <button
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
+          >
+            Created Date
+            <ArrowUpDown className="h-3 w-3" />
+          </button>
+        ),
+        cell: ({ row }) => (
+          <span className="text-xs font-semibold whitespace-nowrap text-muted-foreground">
+            {row.original.createdDate ? formatDate(row.original.createdDate) : '—'}
+          </span>
+        )
+      },
+      {
+        accessorKey: 'updatedDate',
+        header: ({ column }) => (
+          <button
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
+          >
+            Last Updated Date
+            <ArrowUpDown className="h-3 w-3" />
+          </button>
+        ),
+        cell: ({ row }) => (
+          <span className="text-xs font-semibold whitespace-nowrap text-muted-foreground">
+            {row.original.updatedDate ? formatDate(row.original.updatedDate) : '—'}
+          </span>
         )
       },
       {
