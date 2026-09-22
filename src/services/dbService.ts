@@ -201,7 +201,7 @@ class DBService {
       querySnapshot.forEach((docSnap) => {
         tasks.push({ ...docSnap.data(), id: docSnap.id } as Task);
       });
-      return tasks;
+      return tasks.sort((a, b) => new Date(b.createdDate || 0).getTime() - new Date(a.createdDate || 0).getTime());
     })();
 
     try {
@@ -1668,6 +1668,7 @@ class DBService {
         snapshot.forEach((docSnap) => {
           tasks.push({ ...docSnap.data(), id: docSnap.id } as Task);
         });
+        tasks.sort((a, b) => new Date(b.createdDate || 0).getTime() - new Date(a.createdDate || 0).getTime());
         clearTimeout(timer);
         localCallback(tasks);
       }, (error: any) => {
@@ -1717,6 +1718,7 @@ class DBService {
             tasks.push({ ...data, id: docSnap.id } as Task);
           }
         });
+        tasks.sort((a, b) => new Date(b.createdDate || 0).getTime() - new Date(a.createdDate || 0).getTime());
         clearTimeout(timer);
         localCallback(tasks);
       }, (error: any) => {
