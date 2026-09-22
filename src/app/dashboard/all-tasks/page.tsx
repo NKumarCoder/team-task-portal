@@ -55,7 +55,9 @@ export default function AllTasksPage() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
   // Table Sorting & Global Search Filter
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: 'createdDate', desc: true }
+  ]);
   const [globalFilter, setGlobalFilter] = useState('');
 
   // Extended Advanced Filters States
@@ -602,6 +604,11 @@ export default function AllTasksPage() {
       },
       {
         accessorKey: 'createdDate',
+        sortingFn: (rowA, rowB) => {
+          const timeA = new Date(rowA.original.createdDate || 0).getTime();
+          const timeB = new Date(rowB.original.createdDate || 0).getTime();
+          return timeA - timeB;
+        },
         header: ({ column }) => (
           <button
             onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}

@@ -3,7 +3,7 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Sparkles, Loader2, Check, Copy } from 'lucide-react';
+import { X, Sparkles, Loader2, Check, Copy, AlertTriangle } from 'lucide-react';
 import DatePicker from '@/components/ui/DatePicker';
 import MultiAssigneeSelect from '@/components/ui/MultiAssigneeSelect';
 import { useAuth } from '@/hooks/useAuth';
@@ -61,6 +61,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
   const [addingProject, setAddingProject] = useState(false);
   const [createdTask, setCreatedTask] = useState<Task | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [showConfirmClose, setShowConfirmClose] = useState(false);
 
   const isEditMode = !!taskToEdit;
   const isMemberAndEditing = isEditMode && user?.role === 'Member';
@@ -72,8 +73,9 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
     reset,
     watch,
     setValue,
+    getValues,
     control,
-    formState: { errors },
+    formState: { errors, isDirty },
   } = useForm<TaskFormValues>({
     resolver: zodResolver(taskFormSchema) as any,
     defaultValues: {
@@ -334,8 +336,87 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       setCreatedTask(null);
     }
     setSelectedFiles([]);
+    setShowConfirmClose(false);
     onClose();
   };
+
+  const checkHasUnsavedChanges = () => {
+    if (selectedFiles.length > 0) return true;
+    if (isDirty) return true;
+
+    // Explicit check against initial values
+    const currentVals = getValues();
+    if (taskToEdit) {
+      const origAssignees = getTaskAssigneeIds(taskToEdit).sort().join(',');
+      const currAssignees = (currentVals.assigneeEmails || []).slice().sort().join(',');
+      if (currAssignees !== origAssignees) return true;
+      if (currentVals.title !== taskToEdit.title) return true;
+      if (currentVals.description !== (taskToEdit.description || '')) return true;
+      if (currentVals.projectName !== taskToEdit.projectName) return true;
+      if (currentVals.module !== taskToEdit.module) return true;
+      if (currentVals.priority !== taskToEdit.priority) return true;
+      if (currentVals.startDate !== (taskToEdit.startDate ? new Date(taskToEdit.startDate).toISOString().split('T')[0] : '')) return true;
+      if (currentVals.expectedCompletionDate !== (taskToEdit.expectedCompletionDate ? new Date(taskToEdit.expectedCompletionDate).toISOString().split('T')[0] : '')) return true;
+      if (currentVals.remarks !== (taskToEdit.remarks || '')) return true;
+    } else {
+      const expectedInitDue = initialDueDate ? (initialDueDate.includes('T') ? initialDueDate.split('T')[0] : initialDueDate) : '';
+      if (currentVals.projectName && currentVals.projectName !== '') return true;
+      if (currentVals.title && currentVals.title !== (initialTitle || '')) return true;
+      if (currentVals.description && currentVals.description !== (initialDescription || '')) return true;
+      if (currentVals.module && currentVals.module !== '') return true;
+      if (currentVals.assigneeEmails && currentVals.assigneeEmails.length > 0) return true;
+      if (currentVals.priority && currentVals.priority !== 'medium') return true;
+      if (currentVals.startDate && currentVals.startDate !== '') return true;
+      if (currentVals.expectedCompletionDate && currentVals.expectedCompletionDate !== expectedInitDue) return true;
+      if (currentVals.remarks && currentVals.remarks !== '') return true;
+    }
+    return false;
+  };
+
+  const requestClose = () => {
+    if (createdTask) {
+      handleClose();
+      return;
+    }
+    if (checkHasUnsavedChanges()) {
+      setShowConfirmClose(true);
+    } else {
+      handleClose();
+    }
+  };
+
+  const confirmDiscardAndClose = () => {
+    setShowConfirmClose(false);
+    reset();
+    handleClose();
+  };
+
+  const cancelDiscard = () => {
+    setShowConfirmClose(false);
+  };
+
+  // Close confirmation on Escape key
+  useEffect(() => {
+    if (!isOpen) {
+      setShowConfirmClose(false);
+      return;
+    }
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (showConfirmClose) {
+          setShowConfirmClose(false);
+        } else {
+          requestClose();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, showConfirmClose, createdTask, isDirty, selectedFiles.length]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -372,7 +453,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.5 }}
             exit={{ opacity: 0 }}
-            onClick={handleClose}
+            onClick={requestClose}
             className="fixed inset-0 bg-black/60 backdrop-blur-xs"
           />
 
@@ -382,7 +463,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
             initial={{ opacity: 0, scale: 0.95, y: 15 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
-            className="relative w-full max-w-xl glass-panel bg-card/90 rounded-2xl p-5 shadow-2xl border border-card-border overflow-hidden backdrop-blur-lg flex flex-col max-h-[85vh]"
+            className="relative w-full max-w-2xl glass-panel bg-card/95 rounded-2xl p-4 sm:p-5 shadow-2xl border border-card-border overflow-hidden backdrop-blur-lg flex flex-col max-h-[92vh]"
           >
             {createdTask ? (
               <div className="flex flex-col items-center justify-center py-6 text-center space-y-5 flex-1 select-none">
@@ -461,293 +542,353 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
             ) : (
               <>
                 {/* Header */}
-                <div className="flex justify-between items-center pb-3 border-b border-card-border mb-3">
+                <div className="flex justify-between items-center pb-2.5 border-b border-card-border mb-2.5 shrink-0">
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
                       <Sparkles className="h-4 w-4" />
                     </div>
-                    <h2 className="text-lg font-bold tracking-tight">
+                    <h2 className="text-base sm:text-lg font-bold tracking-tight">
                       {isEditMode ? `Edit Task: ${taskToEdit?.taskId}` : 'Create Development Task'}
                     </h2>
                   </div>
                   <button
-                    onClick={handleClose}
+                    onClick={requestClose}
                     className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
                   >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Scrollable Form Body */}
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-2.5 overflow-y-auto pr-1 flex-1">
-
-              {/* Row 1: Project Name & Module */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <div className="flex justify-between items-center">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Project Name *</label>
-                    {user?.role === 'SuperAdmin' && (
-                      <button
-                        type="button"
-                        onClick={() => setShowAddProject(!showAddProject)}
-                        className="text-[10px] text-primary hover:underline font-bold focus:outline-none"
-                      >
-                        {showAddProject ? 'Cancel' : '+ New Project'}
-                      </button>
-                    )}
-                  </div>
-
-                  {showAddProject ? (
-                    <div className="flex gap-2 animate-in fade-in zoom-in-95 duration-100">
-                      <input
-                        type="text"
-                        className="flex-1 px-3 py-1 border border-border rounded-lg bg-background/50 text-xs outline-none focus:border-primary"
-                        placeholder="Project Name..."
-                        value={newProjectName}
-                        onChange={e => setNewProjectName(e.target.value)}
-                        disabled={addingProject}
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddProject}
-                        disabled={addingProject}
-                        className="px-3 py-1 bg-primary text-primary-foreground font-semibold rounded-lg text-xs hover:bg-primary/95 transition-all"
-                      >
-                        {addingProject ? 'Adding...' : 'Add'}
-                      </button>
-                    </div>
-                  ) : (
-                    <select
-                      disabled={loadingProjects || isMemberAndEditing}
-                      className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary ${errors.projectName ? 'border-destructive' : 'border-border'
-                        }`}
-                      {...register('projectName')}
-                    >
-                      <option value="" disabled>Select a project...</option>
-                      {projects.map((proj) => (
-                        <option key={proj.id} value={proj.name}>
-                          {proj.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  {errors.projectName && <p className="text-[9px] text-destructive font-semibold">{errors.projectName.message}</p>}
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Module *</label>
-                  <input
-                    type="text"
-                    disabled={saving || isMemberAndEditing}
-                    className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 ${errors.module ? 'border-destructive' : 'border-border focus:border-primary'
-                      }`}
-                    placeholder="e.g. Auth Flow"
-                    {...register('module')}
-                  />
-                  {errors.module && <p className="text-[9px] text-destructive font-semibold">{errors.module.message}</p>}
-                </div>
-              </div>
+                {/* Form Wrapper */}
+                <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                  {/* Scrollable Form Body */}
+                  <div className="space-y-2 overflow-y-auto pr-1 flex-1">
 
-              {/* Row 2: Task Title */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Task Title *</label>
-                <input
-                  type="text"
-                  disabled={saving || isMemberAndEditing}
-                  className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 ${errors.title ? 'border-destructive' : 'border-border focus:border-primary'
-                    }`}
-                  placeholder="Summarize the core assignment..."
-                  {...register('title')}
-                />
-                {errors.title && <p className="text-[9px] text-destructive font-semibold">{errors.title.message}</p>}
-              </div>
-
-              {/* Row 3: Assigned To & Priority */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assigned To *</label>
-                  <Controller
-                    control={control}
-                    name="assigneeEmails"
-                    render={({ field }) => (
-                      <MultiAssigneeSelect
-                        members={members}
-                        selectedEmails={field.value || []}
-                        onChange={field.onChange}
-                        hasError={!!errors.assigneeEmails}
-                        disabled={loadingMembers || isMemberAndEditing}
-                        placeholder="Select team members..."
-                      />
-                    )}
-                  />
-                  {errors.assigneeEmails && <p className="text-[9px] text-destructive font-semibold">{errors.assigneeEmails.message}</p>}
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Priority *</label>
-                  <select
-                    disabled={saving || isMemberAndEditing}
-                    className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary"
-                    {...register('priority')}
-                  >
-                    {TASK_PRIORITIES.map(p => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Row 4: Start Date & Expected Completion Date */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Start Date</label>
-                  <Controller
-                    control={control}
-                    name="startDate"
-                    render={({ field }) => (
-                      <DatePicker
-                        value={field.value}
-                        onChange={field.onChange}
-                        hasError={!!errors.startDate}
-                        placeholder="mm/dd/yyyy"
-                        align="left"
-                        disabled={saving || isMemberAndEditing}
-                      />
-                    )}
-                  />
-                  {errors.startDate && <p className="text-[9px] text-destructive font-semibold">{errors.startDate.message}</p>}
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expected Completion Date</label>
-                  <Controller
-                    control={control}
-                    name="expectedCompletionDate"
-                    render={({ field }) => (
-                      <DatePicker
-                        value={field.value}
-                        onChange={field.onChange}
-                        hasError={!!errors.expectedCompletionDate}
-                        placeholder="mm/dd/yyyy"
-                        align="right"
-                        disabled={saving || isMemberAndEditing}
-                      />
-                    )}
-                  />
-                  {(errors.expectedCompletionDate?.message || dateRangeError) && (
-                    <p className="text-[9px] text-destructive font-semibold">
-                      {errors.expectedCompletionDate?.message || dateRangeError}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Estimated Effort Display */}
-              {!errors.expectedCompletionDate && !errors.startDate && !dateRangeError && (
-                <div className="flex items-center justify-between px-3 py-2 bg-primary/5 border border-primary/15 rounded-lg">
-                  <div>
-                    <span className="text-[11px] font-semibold text-foreground/90 block">Estimated Effort</span>
-                    <span className="text-[10px] text-muted-foreground">Calculated automatically</span>
-                  </div>
-                  <span className="text-xs font-bold text-primary font-mono bg-primary/10 px-2.5 py-1 rounded-md border border-primary/20">
-                    {formatEstimatedDays(calculatedDays)}
-                  </span>
-                </div>
-              )}
-
-              {/* Row 5: Description (Optional) */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</label>
-                <textarea
-                  rows={3}
-                  disabled={isMemberAndEditing}
-                  className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[70px] disabled:opacity-75 disabled:cursor-not-allowed"
-                  placeholder="Explain details, expectations, or requirements..."
-                  {...register('description')}
-                />
-              </div>
-
-              {/* Attachments Section (Only for task creation/email) */}
-              {!isEditMode && (
-                <div className="space-y-1.5 pt-0.5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
-                        Attachments
-                      </span>
-                      <span className="text-[10px] text-muted-foreground">
-                        Optional · Logs, text files, PDFs, images
-                      </span>
-                    </div>
-                    <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-accent/60 hover:bg-accent text-[11px] font-semibold text-primary border border-border/80 transition-colors cursor-pointer select-none">
-                      <span>+ Add File(s)</span>
-                      <input
-                        type="file"
-                        multiple
-                        className="hidden"
-                        onChange={handleFileChange}
-                        disabled={saving}
-                      />
-                    </label>
-                  </div>
-
-                  {selectedFiles.length > 0 && (
-                    <div className="space-y-1 max-h-[100px] overflow-y-auto bg-slate-950/40 p-2 rounded-lg border border-border mt-1">
-                      {selectedFiles.map((file, idx) => {
-                        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
-                        return (
-                          <div key={idx} className="flex items-center justify-between px-2 py-1 rounded-md bg-background/60 border border-border/50 text-xs">
-                            <span className="truncate flex-1 text-[11px] font-medium pr-2 text-foreground" title={file.name}>
-                              📎 {file.name} <span className="text-[10px] text-muted-foreground">({sizeMB} MB)</span>
-                            </span>
+                    {/* Row 1: Project Name & Module */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <div className="flex justify-between items-center">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Project Name *</label>
+                          {user?.role === 'SuperAdmin' && (
                             <button
                               type="button"
-                              onClick={() => removeSelectedFile(idx)}
-                              className="text-destructive hover:text-destructive/80 transition-colors cursor-pointer p-0.5"
+                              onClick={() => setShowAddProject(!showAddProject)}
+                              className="text-[10px] text-primary hover:underline font-bold focus:outline-none"
                             >
-                              <X className="h-3.5 w-3.5" />
+                              {showAddProject ? 'Cancel' : '+ New Project'}
+                            </button>
+                          )}
+                        </div>
+
+                        {showAddProject ? (
+                          <div className="flex gap-2 animate-in fade-in zoom-in-95 duration-100">
+                            <input
+                              type="text"
+                              className="flex-1 px-3 py-1 border border-border rounded-lg bg-background/50 text-xs outline-none focus:border-primary"
+                              placeholder="Project Name..."
+                              value={newProjectName}
+                              onChange={e => setNewProjectName(e.target.value)}
+                              disabled={addingProject}
+                            />
+                            <button
+                              type="button"
+                              onClick={handleAddProject}
+                              disabled={addingProject}
+                              className="px-3 py-1 bg-primary text-primary-foreground font-semibold rounded-lg text-xs hover:bg-primary/95 transition-all"
+                            >
+                              {addingProject ? 'Adding...' : 'Add'}
                             </button>
                           </div>
-                        );
-                      })}
+                        ) : (
+                          <select
+                            disabled={loadingProjects || isMemberAndEditing}
+                            className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary ${errors.projectName ? 'border-destructive' : 'border-border'
+                              }`}
+                            {...register('projectName')}
+                          >
+                            <option value="" disabled>Select a project...</option>
+                            {projects.map((proj) => (
+                              <option key={proj.id} value={proj.name}>
+                                {proj.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {errors.projectName && <p className="text-[9px] text-destructive font-semibold">{errors.projectName.message}</p>}
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Module *</label>
+                        <input
+                          type="text"
+                          disabled={saving || isMemberAndEditing}
+                          className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 ${errors.module ? 'border-destructive' : 'border-border focus:border-primary'
+                            }`}
+                          placeholder="e.g. Auth Flow"
+                          {...register('module')}
+                        />
+                        {errors.module && <p className="text-[9px] text-destructive font-semibold">{errors.module.message}</p>}
+                      </div>
                     </div>
-                  )}
-                </div>
-              )}
 
-              {/* Submit panel */}
-              <div className="flex gap-2.5 justify-end pt-2.5 border-t border-card-border mt-3">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  disabled={saving}
-                  className="px-4 py-1.5 border border-border hover:bg-accent/40 rounded-lg text-xs font-semibold transition-all cursor-pointer text-muted-foreground"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="px-4 py-1.5 bg-primary text-primary-foreground font-semibold hover:bg-primary/95 transition-all rounded-lg text-xs shadow-lg shadow-primary/20 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {saving ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Saving...
-                    </>
-                  ) : (
-                    <>
-                      <Check className="h-3.5 w-3.5" />
-                      {isEditMode ? 'Save Changes' : 'Create Task'}
-                    </>
-                  )}
-                </button>
-              </div>
+                    {/* Row 2: Task Title */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Task Title *</label>
+                      <input
+                        type="text"
+                        disabled={saving || isMemberAndEditing}
+                        className={`w-full px-3 py-1.5 border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 ${errors.title ? 'border-destructive' : 'border-border focus:border-primary'
+                          }`}
+                        placeholder="Summarize the core assignment..."
+                        {...register('title')}
+                      />
+                      {errors.title && <p className="text-[9px] text-destructive font-semibold">{errors.title.message}</p>}
+                    </div>
 
-            </form>
-            </>
+                    {/* Row 3: Assigned To & Priority */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Assigned To *</label>
+                        <Controller
+                          control={control}
+                          name="assigneeEmails"
+                          render={({ field }) => (
+                            <MultiAssigneeSelect
+                              members={members}
+                              selectedEmails={field.value || []}
+                              onChange={field.onChange}
+                              hasError={!!errors.assigneeEmails}
+                              disabled={loadingMembers || isMemberAndEditing}
+                              placeholder="Select team members..."
+                            />
+                          )}
+                        />
+                        {errors.assigneeEmails && <p className="text-[9px] text-destructive font-semibold">{errors.assigneeEmails.message}</p>}
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Priority *</label>
+                        <select
+                          disabled={saving || isMemberAndEditing}
+                          className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary"
+                          {...register('priority')}
+                        >
+                          {TASK_PRIORITIES.map(p => (
+                            <option key={p.value} value={p.value}>{p.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Row 4: Start Date & Expected Completion Date */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Start Date</label>
+                        <Controller
+                          control={control}
+                          name="startDate"
+                          render={({ field }) => (
+                            <DatePicker
+                              value={field.value}
+                              onChange={field.onChange}
+                              hasError={!!errors.startDate}
+                              placeholder="mm/dd/yyyy"
+                              align="left"
+                              disabled={saving || isMemberAndEditing}
+                            />
+                          )}
+                        />
+                        {errors.startDate && <p className="text-[9px] text-destructive font-semibold">{errors.startDate.message}</p>}
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expected Completion Date</label>
+                        <Controller
+                          control={control}
+                          name="expectedCompletionDate"
+                          render={({ field }) => (
+                            <DatePicker
+                              value={field.value}
+                              onChange={field.onChange}
+                              hasError={!!errors.expectedCompletionDate}
+                              placeholder="mm/dd/yyyy"
+                              align="right"
+                              disabled={saving || isMemberAndEditing}
+                            />
+                          )}
+                        />
+                        {(errors.expectedCompletionDate?.message || dateRangeError) && (
+                          <p className="text-[9px] text-destructive font-semibold">
+                            {errors.expectedCompletionDate?.message || dateRangeError}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Estimated Effort Display */}
+                    {!errors.expectedCompletionDate && !errors.startDate && !dateRangeError && (
+                      <div className="flex items-center justify-between px-3 py-1.5 bg-primary/5 border border-primary/15 rounded-lg">
+                        <div>
+                          <span className="text-[11px] font-semibold text-foreground/90 block">Estimated Effort</span>
+                          <span className="text-[9px] text-muted-foreground">Calculated automatically</span>
+                        </div>
+                        <span className="text-xs font-bold text-primary font-mono bg-primary/10 px-2 py-0.5 rounded-md border border-primary/20">
+                          {formatEstimatedDays(calculatedDays)}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Row 5: Description (Optional) */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</label>
+                      <textarea
+                        rows={2}
+                        disabled={isMemberAndEditing}
+                        className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 outline-none text-xs focus:ring-2 focus:ring-primary/25 resize-y font-medium text-foreground min-h-[52px] disabled:opacity-75 disabled:cursor-not-allowed"
+                        placeholder="Explain details, expectations, or requirements..."
+                        {...register('description')}
+                      />
+                    </div>
+
+                    {/* Attachments Section (Only for task creation/email) */}
+                    {!isEditMode && (
+                      <div className="space-y-1 pt-0.5">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
+                              Attachments
+                            </span>
+                            <span className="text-[10px] text-muted-foreground">
+                              Optional · Logs, text files, PDFs, images
+                            </span>
+                          </div>
+                          <label className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-accent/60 hover:bg-accent text-[11px] font-semibold text-primary border border-border/80 transition-colors cursor-pointer select-none">
+                            <span>+ Add File(s)</span>
+                            <input
+                              type="file"
+                              multiple
+                              className="hidden"
+                              onChange={handleFileChange}
+                              disabled={saving}
+                            />
+                          </label>
+                        </div>
+
+                        {selectedFiles.length > 0 && (
+                          <div className="space-y-1 max-h-[80px] overflow-y-auto bg-slate-950/40 p-2 rounded-lg border border-border mt-1">
+                            {selectedFiles.map((file, idx) => {
+                              const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                              return (
+                                <div key={idx} className="flex items-center justify-between px-2 py-1 rounded-md bg-background/60 border border-border/50 text-xs">
+                                  <span className="truncate flex-1 text-[11px] font-medium pr-2 text-foreground" title={file.name}>
+                                    📎 {file.name} <span className="text-[10px] text-muted-foreground">({sizeMB} MB)</span>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSelectedFile(idx)}
+                                    className="text-destructive hover:text-destructive/80 transition-colors cursor-pointer p-0.5"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                  </div>
+
+                  {/* Submit panel - Sticky Footer */}
+                  <div className="flex gap-2.5 justify-end pt-2.5 border-t border-card-border mt-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={requestClose}
+                      disabled={saving}
+                      className="px-4 py-1.5 border border-border hover:bg-accent/40 rounded-lg text-xs font-semibold transition-all cursor-pointer text-muted-foreground"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="px-4 py-1.5 bg-primary text-primary-foreground font-semibold hover:bg-primary/95 transition-all rounded-lg text-xs shadow-lg shadow-primary/20 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {saving ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Check className="h-3.5 w-3.5" />
+                          {isEditMode ? 'Save Changes' : 'Create Task'}
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                </form>
+              </>
             )}
           </motion.div>
+
+          {/* Unsaved Changes Confirmation Dialog */}
+          <AnimatePresence>
+            {showConfirmClose && (
+              <div
+                key="unsaved-changes-dialog"
+                className="fixed inset-0 z-60 flex items-center justify-center p-4"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.6 }}
+                  exit={{ opacity: 0 }}
+                  onClick={cancelDiscard}
+                  className="fixed inset-0 bg-black/70 backdrop-blur-xs"
+                />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="relative w-full max-w-md glass-panel bg-card/98 border border-card-border p-5 rounded-2xl shadow-2xl z-10 select-none"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-start gap-3.5">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-500 shrink-0">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-1">
+                      <h3 className="text-base font-bold text-foreground">
+                        {isEditMode ? 'Close Edit Task?' : 'Close Create Task?'}
+                      </h3>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Are you sure you want to close this task? Any unsaved changes will be lost.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2.5 justify-end pt-4 mt-4 border-t border-card-border">
+                    <button
+                      type="button"
+                      onClick={cancelDiscard}
+                      className="px-4 py-2 border border-border hover:bg-accent/50 rounded-xl text-xs font-semibold text-muted-foreground hover:text-foreground transition-all cursor-pointer"
+                    >
+                      Cancel / Keep Editing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={confirmDiscardAndClose}
+                      className="px-4 py-2 bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-xl text-xs font-semibold shadow-md transition-all cursor-pointer"
+                    >
+                      Close / Discard
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
         </div>
       )}
     </AnimatePresence>
