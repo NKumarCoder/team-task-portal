@@ -3,20 +3,23 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Sparkles, Loader2, Check, Copy, AlertTriangle } from 'lucide-react';
+import { X, Sparkles, Loader2, Check, Copy, AlertTriangle, Bug, CheckSquare, Bookmark, Layers } from 'lucide-react';
 import DatePicker from '@/components/ui/DatePicker';
 import MultiAssigneeSelect from '@/components/ui/MultiAssigneeSelect';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
-import { Task, TaskPriority, TaskStatus, Member, Project, Attachment, TaskAssignee } from '@/types';
+import { Task, TaskPriority, TaskStatus, Member, Project, Attachment, TaskAssignee, IssueType } from '@/types';
 import toast from 'react-hot-toast';
-import { TASK_PRIORITIES } from '@/constants';
+import { TASK_PRIORITIES, ISSUE_TYPES } from '@/constants';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, calculateWorkingDays, calculateEstimatedEffort, formatEstimatedDays, parseDateOnlyToUTC } from '@/utils';
 
 const taskFormSchema = z.object({
   projectName: z.string().min(1, 'Project Name is required'),
   title: z.string().min(1, 'Task Title is required'),
   description: z.string(),
+  issueType: z.enum(['Bug', 'Task', 'Story', 'Epic']).default('Task'),
+  qaOwnerEmail: z.string().optional().default(''),
+  parentTaskId: z.string().optional().default(''),
   assigneeEmails: z.array(z.string().email('Invalid email')).min(1, 'At least one assignee is required'),
   priority: z.enum(['critical', 'high', 'medium', 'low']),
   module: z.string().min(1, 'Module is required'),
@@ -47,12 +50,27 @@ interface CreateTaskDialogProps {
   initialTitle?: string; // If provided, pre-populates title (e.g. from To Do conversion)
   initialDueDate?: string; // If provided, pre-populates expected completion date
   initialDescription?: string; // If provided, pre-populates description (e.g. from To Do note)
+  initialParentTaskId?: string; // If provided, pre-populates parent task
+  initialProjectName?: string; // If provided, pre-populates project name
+  initialIssueType?: IssueType; // If provided, pre-populates issue type
 }
 
-export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdit, initialTitle, initialDueDate, initialDescription }: CreateTaskDialogProps) {
+export default function CreateTaskDialog({
+  isOpen,
+  onClose,
+  onSuccess,
+  taskToEdit,
+  initialTitle,
+  initialDueDate,
+  initialDescription,
+  initialParentTaskId,
+  initialProjectName,
+  initialIssueType
+}: CreateTaskDialogProps) {
   const { user } = useAuth();
   const [members, setMembers] = useState<Member[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -82,6 +100,9 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       projectName: '',
       title: '',
       description: '',
+      issueType: 'Task',
+      qaOwnerEmail: '',
+      parentTaskId: '',
       assigneeEmails: [],
       priority: 'medium',
       module: '',
@@ -93,6 +114,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
 
   const expectedCompletionDate = watch('expectedCompletionDate');
   const startDate = watch('startDate');
+  const selectedProjectName = watch('projectName');
 
   const dateRangeError = useMemo(() => {
     if (startDate && expectedCompletionDate) {
@@ -135,16 +157,45 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
     }
   };
 
-  // Load team members & projects
+  // Helper to check if candidateId is a descendant of rootId (prevents circular hierarchy)
+  const isDescendant = (candidateId: string, rootId: string, tasksList: Task[]): boolean => {
+    if (!candidateId || !rootId) return false;
+    if (candidateId === rootId) return true;
+    const children = tasksList.filter(t => t.parentTaskId === rootId || t.parentTaskId === (tasksList.find(x => x.id === rootId)?.taskId));
+    for (const child of children) {
+      const childKey = child.id || child.taskId;
+      if (childKey === candidateId || child.taskId === candidateId) return true;
+      if (isDescendant(candidateId, childKey, tasksList)) return true;
+    }
+    return false;
+  };
+
+  const eligibleParents = useMemo(() => {
+    const currentId = taskToEdit?.id || '';
+    const currentTaskId = taskToEdit?.taskId || '';
+    return allTasks.filter(t => {
+      // Cannot be self
+      if (taskToEdit && (t.id === currentId || t.taskId === currentTaskId)) return false;
+      // Cannot be descendant (prevents circular)
+      if (taskToEdit && isDescendant(t.id || t.taskId, currentId || currentTaskId, allTasks)) return false;
+      // Filter by project if selected
+      if (selectedProjectName && t.projectName !== selectedProjectName) return false;
+      return true;
+    });
+  }, [allTasks, taskToEdit, selectedProjectName]);
+
+  // Load team members, projects & tasks
   useEffect(() => {
     async function loadData() {
       try {
-        const [fetchedMembers, fetchedProjects] = await Promise.all([
+        const [fetchedMembers, fetchedProjects, fetchedTasks] = await Promise.all([
           dbService.getMembers(),
           dbService.getProjects(),
+          dbService.getTasks(),
         ]);
         setMembers(fetchedMembers);
         setProjects(fetchedProjects);
+        setAllTasks(fetchedTasks);
       } catch (error) {
         console.error('Failed to load dropdown data:', error);
       } finally {
@@ -182,6 +233,9 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         projectName: taskToEdit.projectName,
         title: taskToEdit.title,
         description: taskToEdit.description || '',
+        issueType: taskToEdit.issueType || 'Task',
+        qaOwnerEmail: taskToEdit.qaOwner?.id || taskToEdit.qaOwnerId || '',
+        parentTaskId: taskToEdit.parentTaskId || '',
         assigneeEmails: getTaskAssigneeIds(taskToEdit),
         priority: taskToEdit.priority,
         module: taskToEdit.module,
@@ -192,9 +246,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
     } else if (isOpen && !taskToEdit) {
       setSelectedFiles([]);
       reset({
-        projectName: '',
+        projectName: initialProjectName || '',
         title: initialTitle || '',
         description: initialDescription || '',
+        issueType: initialIssueType || 'Task',
+        qaOwnerEmail: '',
+        parentTaskId: initialParentTaskId || '',
         assigneeEmails: [],
         priority: 'medium',
         module: '',
@@ -203,7 +260,7 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
         remarks: '',
       });
     }
-  }, [isOpen, taskToEdit, initialTitle, initialDueDate, initialDescription, reset]);
+  }, [isOpen, taskToEdit, initialTitle, initialDueDate, initialDescription, initialParentTaskId, initialProjectName, initialIssueType, reset]);
 
   const onSubmit = async (values: TaskFormValues) => {
     setSaving(true);
@@ -219,6 +276,23 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
       });
       const assigneeIds = assignees.map(a => a.id);
       const primaryAssignee = assignees[0] || { id: '', name: 'Unassigned', color: '#6366f1' };
+
+      // Resolve QA Owner
+      let qaOwnerObj: TaskAssignee | undefined = undefined;
+      if (values.qaOwnerEmail) {
+        const matchedQa = members.find(m => m.email.toLowerCase() === values.qaOwnerEmail.toLowerCase());
+        if (matchedQa) {
+          qaOwnerObj = {
+            id: matchedQa.email.toLowerCase(),
+            name: matchedQa.name,
+            color: matchedQa.avatarColor || '#10b981'
+          };
+        }
+      }
+
+      // Resolve Parent Task
+      const selectedParent = allTasks.find(t => t.id === values.parentTaskId || t.taskId === values.parentTaskId);
+      const parentTaskTitle = selectedParent ? selectedParent.title : undefined;
 
       if (isEditMode && taskToEdit) {
         // Record timeline history if status changed
@@ -240,6 +314,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           projectName: values.projectName,
           title: values.title,
           description: values.description,
+          issueType: values.issueType,
+          qaOwner: qaOwnerObj,
+          qaOwnerId: qaOwnerObj?.id || '',
+          qaOwnerName: qaOwnerObj?.name || '',
+          parentTaskId: values.parentTaskId || undefined,
+          parentTaskTitle: parentTaskTitle || undefined,
           assignees,
           assigneeIds,
           // Legacy backward-compatibility fields
@@ -276,6 +356,12 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
           projectName: values.projectName,
           title: values.title,
           description: values.description,
+          issueType: values.issueType,
+          qaOwner: qaOwnerObj,
+          qaOwnerId: qaOwnerObj?.id || '',
+          qaOwnerName: qaOwnerObj?.name || '',
+          parentTaskId: values.parentTaskId || undefined,
+          parentTaskTitle: parentTaskTitle || undefined,
           assignees,
           assigneeIds,
           // Legacy backward-compatibility fields
@@ -562,7 +648,39 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                 {/* Form Wrapper */}
                 <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col flex-1 min-h-0 overflow-hidden">
                   {/* Scrollable Form Body */}
-                  <div className="space-y-2 overflow-y-auto pr-1 flex-1">
+                  <div className="space-y-2.5 overflow-y-auto pr-1 flex-1">
+
+                    {/* Issue Type Selector */}
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Issue Type *</label>
+                      <Controller
+                        control={control}
+                        name="issueType"
+                        render={({ field }) => (
+                          <div className="grid grid-cols-4 gap-2">
+                            {ISSUE_TYPES.map(type => {
+                              const isSelected = (field.value || 'Task') === type.value;
+                              return (
+                                <button
+                                  key={type.value}
+                                  type="button"
+                                  onClick={() => field.onChange(type.value)}
+                                  disabled={saving || isMemberAndEditing}
+                                  className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium border transition-all ${
+                                    isSelected
+                                      ? 'bg-primary/10 border-primary text-primary font-semibold shadow-sm'
+                                      : 'bg-background/50 border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground'
+                                  }`}
+                                >
+                                  <span style={{ color: type.color }} className="text-xs">●</span>
+                                  <span>{type.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      />
+                    </div>
 
                     {/* Row 1: Project Name & Module */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -628,6 +746,45 @@ export default function CreateTaskDialog({ isOpen, onClose, onSuccess, taskToEdi
                           {...register('module')}
                         />
                         {errors.module && <p className="text-[9px] text-destructive font-semibold">{errors.module.message}</p>}
+                      </div>
+                    </div>
+
+                    {/* Row: Parent Task & QA Owner */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                          Parent Task <span className="text-[9px] font-normal text-muted-foreground">(Optional)</span>
+                        </label>
+                        <select
+                          disabled={saving || isMemberAndEditing}
+                          className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary text-foreground"
+                          {...register('parentTaskId')}
+                        >
+                          <option value="">None (Top-level task)</option>
+                          {eligibleParents.map(task => (
+                            <option key={task.id || task.taskId} value={task.id || task.taskId}>
+                              {task.taskId ? `[${task.taskId}] ` : ''}{task.title} ({task.issueType || 'Task'})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                          QA Owner <span className="text-[9px] font-normal text-muted-foreground">(Optional)</span>
+                        </label>
+                        <select
+                          disabled={loadingMembers || saving || isMemberAndEditing}
+                          className="w-full px-3 py-1.5 border border-border rounded-lg bg-background/50 text-xs outline-none cursor-pointer focus:border-primary text-foreground"
+                          {...register('qaOwnerEmail')}
+                        >
+                          <option value="">Unassigned</option>
+                          {members.filter(m => m.isActive !== false).map(member => (
+                            <option key={member.id} value={member.email}>
+                              {member.name} ({member.email})
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 

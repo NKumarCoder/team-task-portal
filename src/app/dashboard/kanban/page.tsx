@@ -22,8 +22,10 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { formatDate, isUserAssignedToTask, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames } from '@/utils';
+import { canTransitionToStatus } from '@/utils/permissions';
 import PriorityBadge from '@/components/tasks/PriorityBadge';
 import StatusBadge from '@/components/tasks/StatusBadge';
+import IssueTypeBadge from '@/components/tasks/IssueTypeBadge';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
 import StatusUpdateModal from '@/components/tasks/StatusUpdateModal';
@@ -163,9 +165,10 @@ export default function KanbanPage() {
 
     if (task.status === status) return;
 
-    // Check Employee rule: employee can only update status of their OWN assigned tasks
-    if (isEmployee && !isUserAssignedToTask(task, user?.email)) {
-      toast.error('Permission Denied: Employees can only move tasks assigned to themselves.');
+    // Check Role-Based Status Restrictions
+    const permCheck = canTransitionToStatus(task, status, user);
+    if (!permCheck.allowed) {
+      toast.error(permCheck.reason || 'Permission Denied: You cannot transition this task to this status.');
       return;
     }
 
@@ -178,7 +181,7 @@ export default function KanbanPage() {
     }
 
     try {
-      await dbService.updateTask(taskId, { status }, user?.email || '', user?.displayName || '');
+      await dbService.updateTask(taskId, { status }, user?.email || '', user?.displayName || '', undefined, user?.role);
       toast.success(`Task status updated to ${TASK_STATUS_CONFIG[status]?.label || status}`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update status');
@@ -187,14 +190,26 @@ export default function KanbanPage() {
 
   const handleConfirmStatusChange = async (targetStatus: TaskStatus, comment: string) => {
     if (!statusModalTask?.id) return;
-    await dbService.updateTask(
-      statusModalTask.id,
-      { status: targetStatus },
-      user?.email || '',
-      user?.displayName || '',
-      comment
-    );
-    toast.success(`Task status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
+
+    const permCheck = canTransitionToStatus(statusModalTask, targetStatus, user);
+    if (!permCheck.allowed) {
+      toast.error(permCheck.reason || 'Permission Denied: You cannot transition this task to this status.');
+      return;
+    }
+
+    try {
+      await dbService.updateTask(
+        statusModalTask.id,
+        { status: targetStatus },
+        user?.email || '',
+        user?.displayName || '',
+        comment,
+        user?.role
+      );
+      toast.success(`Task status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update status');
+    }
   };
 
   // Exporter: client-side CSV downloader
@@ -378,8 +393,11 @@ export default function KanbanPage() {
                         >
                           {/* Top Row: Task Seq ID & Project */}
                           <div className="flex justify-between items-center gap-2">
-                            <span className="text-[9px] font-bold font-mono text-muted-foreground">{task.taskId}</span>
-                            <span className="text-[9px] font-extrabold text-primary bg-primary/5 px-1.5 py-0.5 rounded max-w-[120px] truncate uppercase border border-primary/10">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <IssueTypeBadge issueType={task.issueType} />
+                              <span className="text-[9px] font-bold font-mono text-muted-foreground truncate">{task.taskId}</span>
+                            </div>
+                            <span className="text-[9px] font-extrabold text-primary bg-primary/5 px-1.5 py-0.5 rounded max-w-[120px] truncate uppercase border border-primary/10 shrink-0">
                               {task.projectName}
                             </span>
                           </div>

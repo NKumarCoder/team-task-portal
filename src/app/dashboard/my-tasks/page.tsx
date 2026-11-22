@@ -16,6 +16,7 @@ import { dbService } from '@/services/dbService';
 import { Task, TaskPriority, TaskStatus } from '@/types';
 import StatusBadge from '@/components/tasks/StatusBadge';
 import PriorityBadge from '@/components/tasks/PriorityBadge';
+import IssueTypeBadge from '@/components/tasks/IssueTypeBadge';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
 import {
@@ -40,7 +41,7 @@ import {
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { formatDate, getTaskAssignees, getTaskAssigneeNames, isUserAssignedToTask } from '@/utils';
-import { TASK_STATUSES, TASK_PRIORITIES } from '@/constants';
+import { TASK_STATUSES, TASK_PRIORITIES, ISSUE_TYPES } from '@/constants';
 
 type ActiveTab = 'pending' | 'in-progress' | 'today' | 'overdue' | 'completed' | 'all';
 
@@ -67,6 +68,7 @@ export default function MyTasksPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterPriority, setFilterPriority] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterIssueType, setFilterIssueType] = useState('all');
 
   // Table Sorting (Default to Created Date DESC)
   const [sorting, setSorting] = useState<SortingState>([
@@ -288,7 +290,12 @@ export default function MyTasksPage() {
         return false;
       }
 
-      // 4. Search query filter (title, taskId, project, module, description)
+      // 4. Issue Type secondary filter
+      if (filterIssueType !== 'all' && (task.issueType || 'Task') !== filterIssueType) {
+        return false;
+      }
+
+      // 5. Search query filter (title, taskId, project, module, description)
       if (cleanSearch) {
         const matchesSearch =
           task.title.toLowerCase().includes(cleanSearch) ||
@@ -301,7 +308,7 @@ export default function MyTasksPage() {
 
       return true;
     });
-  }, [tasks, activeTab, filterPriority, filterStatus, searchQuery, dateHelpers]);
+  }, [tasks, activeTab, filterPriority, filterStatus, filterIssueType, searchQuery, dateHelpers]);
 
   // Define Columns with exact visual language matching All Tasks table
   const columns = useMemo<ColumnDef<Task>[]>(
@@ -318,9 +325,12 @@ export default function MyTasksPage() {
           </button>
         ),
         cell: ({ row }) => (
-          <span className="font-mono text-xs font-bold text-muted-foreground">
-            {row.original.taskId}
-          </span>
+          <div className="flex items-center gap-2">
+            <IssueTypeBadge issueType={row.original.issueType} />
+            <span className="font-mono text-xs font-bold text-muted-foreground">
+              {row.original.taskId}
+            </span>
+          </div>
         )
       },
       {
@@ -378,37 +388,58 @@ export default function MyTasksPage() {
         )
       },
       {
+        accessorKey: 'status',
+        header: ({ column }) => (
+          <button
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
+          >
+            Status
+            <ArrowUpDown className="h-3 w-3" />
+          </button>
+        ),
+        cell: ({ row }) => <StatusBadge status={row.original.status} />
+      },
+      {
         accessorKey: 'assignees',
         header: () => <span className="font-bold text-xs tracking-wider uppercase">Assigned To</span>,
         cell: ({ row }) => {
           const assignees = getTaskAssignees(row.original);
           const names = getTaskAssigneeNames(row.original);
           return (
-            <div className="flex items-center gap-2" title={names}>
-              <div className="flex items-center shrink-0">
-                {assignees.slice(0, 3).map((a, idx) => (
-                  <div
-                    key={a.id || `assignee-${idx}`}
-                    className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[9px] shadow-sm border border-background shrink-0 ${
-                      idx > 0 ? '-ml-2' : ''
-                    }`}
-                    style={{ backgroundColor: a.color || '#6366f1' }}
-                  >
-                    {a.name.charAt(0).toUpperCase()}
-                  </div>
-                ))}
-                {assignees.length > 3 && (
-                  <div className="w-6 h-6 -ml-2 rounded-full flex items-center justify-center font-bold text-[8px] bg-slate-800 text-muted-foreground border border-background shrink-0 shadow-sm">
-                    +{assignees.length - 3}
-                  </div>
-                )}
-                {assignees.length === 0 && (
-                  <span className="text-xs text-muted-foreground">Unassigned</span>
-                )}
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2" title={names}>
+                <div className="flex items-center shrink-0">
+                  {assignees.slice(0, 3).map((a, idx) => (
+                    <div
+                      key={a.id || `assignee-${idx}`}
+                      className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[9px] shadow-sm border border-background shrink-0 ${
+                        idx > 0 ? '-ml-2' : ''
+                      }`}
+                      style={{ backgroundColor: a.color || '#6366f1' }}
+                    >
+                      {a.name.charAt(0).toUpperCase()}
+                    </div>
+                  ))}
+                  {assignees.length > 3 && (
+                    <div className="w-6 h-6 -ml-2 rounded-full flex items-center justify-center font-bold text-[8px] bg-slate-800 text-muted-foreground border border-background shrink-0 shadow-sm">
+                      +{assignees.length - 3}
+                    </div>
+                  )}
+                  {assignees.length === 0 && (
+                    <span className="text-xs text-muted-foreground">Unassigned</span>
+                  )}
+                </div>
+                <span className="text-xs font-semibold whitespace-nowrap truncate max-w-[130px]">
+                  {names}
+                </span>
               </div>
-              <span className="text-xs font-semibold whitespace-nowrap truncate max-w-[130px]">
-                {names}
-              </span>
+              {row.original.qaOwner && (
+                <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1 rounded border border-emerald-500/20">QA</span>
+                  <span className="truncate max-w-[120px]">{row.original.qaOwner.name}</span>
+                </div>
+              )}
             </div>
           );
         }
@@ -425,19 +456,6 @@ export default function MyTasksPage() {
           </button>
         ),
         cell: ({ row }) => <PriorityBadge priority={row.original.priority} showIcon={false} />
-      },
-      {
-        accessorKey: 'status',
-        header: ({ column }) => (
-          <button
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
-          >
-            Status
-            <ArrowUpDown className="h-3 w-3" />
-          </button>
-        ),
-        cell: ({ row }) => <StatusBadge status={row.original.status} />
       },
       {
         accessorKey: 'expectedCompletionDate',
@@ -560,9 +578,10 @@ export default function MyTasksPage() {
     setSearchQuery('');
     setFilterPriority('all');
     setFilterStatus('all');
+    setFilterIssueType('all');
   };
 
-  const hasActiveFilters = searchQuery !== '' || filterPriority !== 'all' || filterStatus !== 'all';
+  const hasActiveFilters = searchQuery !== '' || filterPriority !== 'all' || filterStatus !== 'all' || filterIssueType !== 'all';
 
   return (
     <div className="space-y-6 pb-24">
@@ -679,6 +698,17 @@ export default function MyTasksPage() {
             <option value="all">All Statuses</option>
             {TASK_STATUSES.map(s => (
               <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+
+          <select
+            value={filterIssueType}
+            onChange={(e) => setFilterIssueType(e.target.value)}
+            className="px-2.5 py-1.5 bg-background/50 border border-border rounded-lg text-xs outline-none text-muted-foreground hover:text-foreground cursor-pointer focus:border-primary/50"
+          >
+            <option value="all">All Issue Types</option>
+            {ISSUE_TYPES.map(it => (
+              <option key={it.value} value={it.value}>{it.label}</option>
             ))}
           </select>
 

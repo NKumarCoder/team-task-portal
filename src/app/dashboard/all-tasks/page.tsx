@@ -16,8 +16,10 @@ import { dbService } from '@/services/dbService';
 import { Task, TaskStatus, TaskPriority, Comment } from '@/types';
 import StatusBadge from '@/components/tasks/StatusBadge';
 import PriorityBadge from '@/components/tasks/PriorityBadge';
+import IssueTypeBadge from '@/components/tasks/IssueTypeBadge';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
+import { ISSUE_TYPES } from '@/constants';
 import {
   Search,
   Trash2,
@@ -67,6 +69,8 @@ export default function AllTasksPage() {
   const [filterAssignee, setFilterAssignee] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterPriority, setFilterPriority] = useState('all');
+  const [filterIssueType, setFilterIssueType] = useState('all');
+  const [filterQaOwner, setFilterQaOwner] = useState('');
   const [filterModule, setFilterModule] = useState('');
   const [filterCreatedBy, setFilterCreatedBy] = useState('');
   const [filterStartDate, setFilterStartDate] = useState('');
@@ -168,6 +172,12 @@ export default function AllTasksPage() {
       const matchesAssignee = !filterAssignee || getTaskAssignees(task).some(a => a.name.toLowerCase().includes(filterAssignee.toLowerCase()) || a.id.toLowerCase().includes(filterAssignee.toLowerCase()));
       const matchesStatus = filterStatus === 'all' || task.status === filterStatus;
       const matchesPriority = filterPriority === 'all' || task.priority === filterPriority;
+      const matchesIssueType = filterIssueType === 'all' || (task.issueType || 'Task') === filterIssueType;
+      const matchesQaOwner = !filterQaOwner || (
+        task.qaOwner?.name?.toLowerCase().includes(filterQaOwner.toLowerCase()) ||
+        task.qaOwner?.id?.toLowerCase().includes(filterQaOwner.toLowerCase()) ||
+        task.qaOwnerName?.toLowerCase().includes(filterQaOwner.toLowerCase())
+      );
       const matchesModule = !filterModule || task.module.toLowerCase().includes(filterModule.toLowerCase());
       const matchesCreatedBy = !filterCreatedBy || task.createdBy.toLowerCase().includes(filterCreatedBy.toLowerCase());
 
@@ -228,11 +238,13 @@ export default function AllTasksPage() {
       }
 
       return matchesGlobal && matchesTaskId && matchesProject && matchesAssignee && matchesStatus && matchesPriority &&
+             matchesIssueType && matchesQaOwner &&
              matchesModule && matchesCreatedBy && matchesDateRange && matchesDueDate && matchesOverdue &&
              matchesCompleted && matchesTesting && matchesDeployment && matchesLive && matchesCritical && matchesBlocked;
     });
   }, [
     tasks, globalFilter, filterTaskId, filterProject, filterAssignee, filterStatus, filterPriority,
+    filterIssueType, filterQaOwner,
     filterModule, filterCreatedBy, filterStartDate, filterEndDate, filterDueDate, filterOverdue,
     filterCompleted, filterTesting, filterDeployment, filterLive, filterCritical, filterBlocked, commentsMap
   ]);
@@ -299,15 +311,15 @@ export default function AllTasksPage() {
       return;
     }
 
-    const headers = ['Task ID', 'Project', 'Module', 'Task Title', 'Assigned To', 'Priority', 'Status', 'Due Date', 'Created Date', 'Last Updated Date', 'Created By'];
+    const headers = ['Task ID', 'Project', 'Module', 'Task Title', 'Status', 'Assigned To', 'Priority', 'Due Date', 'Created Date', 'Last Updated Date', 'Created By'];
     const rows = list.map(t => [
       t.taskId,
       `"${t.projectName.replace(/"/g, '""')}"`,
       `"${(t.module || '—').replace(/"/g, '""')}"`,
       `"${t.title.replace(/"/g, '""')}"`,
+      t.status.toUpperCase(),
       `"${getTaskAssigneeNames(t).replace(/"/g, '""')}"`,
       t.priority.toUpperCase(),
-      t.status.toUpperCase(),
       formatDate(t.expectedCompletionDate),
       t.createdDate ? formatDate(t.createdDate) : '—',
       t.updatedDate ? formatDate(t.updatedDate) : '—',
@@ -357,9 +369,9 @@ export default function AllTasksPage() {
               <td>Project</td>
               <td>Module</td>
               <td>Task Title</td>
+              <td>Status</td>
               <td>Assigned To</td>
               <td>Priority</td>
-              <td>Status</td>
               <td>Due Date</td>
               <td>Created Date</td>
               <td>Last Updated Date</td>
@@ -374,9 +386,9 @@ export default function AllTasksPage() {
           <td>${t.projectName}</td>
           <td>${t.module || '—'}</td>
           <td>${t.title}</td>
+          <td>${t.status.toUpperCase()}</td>
           <td>${getTaskAssigneeNames(t)}</td>
           <td>${t.priority.toUpperCase()}</td>
-          <td>${t.status.toUpperCase()}</td>
           <td>${formatDate(t.expectedCompletionDate)}</td>
           <td>${t.createdDate ? formatDate(t.createdDate) : '—'}</td>
           <td>${t.updatedDate ? formatDate(t.updatedDate) : '—'}</td>
@@ -463,7 +475,12 @@ export default function AllTasksPage() {
             <ArrowUpDown className="h-3 w-3" />
           </button>
         ),
-        cell: ({ row }) => <span className="font-mono text-xs font-bold text-muted-foreground">{row.original.taskId}</span>
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <IssueTypeBadge issueType={row.original.issueType} />
+            <span className="font-mono text-xs font-bold text-muted-foreground">{row.original.taskId}</span>
+          </div>
+        )
       },
       {
         accessorKey: 'projectName',
@@ -526,37 +543,58 @@ export default function AllTasksPage() {
         )
       },
       {
+        accessorKey: 'status',
+        header: ({ column }) => (
+          <button
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
+          >
+            Status
+            <ArrowUpDown className="h-3 w-3" />
+          </button>
+        ),
+        cell: ({ row }) => <StatusBadge status={row.original.status} />
+      },
+      {
         accessorKey: 'assignees',
         header: () => <span className="font-bold text-xs tracking-wider uppercase">Assigned To</span>,
         cell: ({ row }) => {
           const assignees = getTaskAssignees(row.original);
           const names = getTaskAssigneeNames(row.original);
           return (
-            <div className="flex items-center gap-2" title={names}>
-              <div className="flex items-center shrink-0">
-                {assignees.slice(0, 3).map((a, idx) => (
-                  <div
-                    key={a.id || `assignee-${idx}`}
-                    className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[9px] shadow-sm border border-background shrink-0 ${
-                      idx > 0 ? '-ml-2' : ''
-                    }`}
-                    style={{ backgroundColor: a.color || '#6366f1' }}
-                  >
-                    {a.name.charAt(0).toUpperCase()}
-                  </div>
-                ))}
-                {assignees.length > 3 && (
-                  <div className="w-6 h-6 -ml-2 rounded-full flex items-center justify-center font-bold text-[8px] bg-slate-800 text-muted-foreground border border-background shrink-0 shadow-sm">
-                    +{assignees.length - 3}
-                  </div>
-                )}
-                {assignees.length === 0 && (
-                  <span className="text-xs text-muted-foreground">Unassigned</span>
-                )}
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2" title={names}>
+                <div className="flex items-center shrink-0">
+                  {assignees.slice(0, 3).map((a, idx) => (
+                    <div
+                      key={a.id || `assignee-${idx}`}
+                      className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[9px] shadow-sm border border-background shrink-0 ${
+                        idx > 0 ? '-ml-2' : ''
+                      }`}
+                      style={{ backgroundColor: a.color || '#6366f1' }}
+                    >
+                      {a.name.charAt(0).toUpperCase()}
+                    </div>
+                  ))}
+                  {assignees.length > 3 && (
+                    <div className="w-6 h-6 -ml-2 rounded-full flex items-center justify-center font-bold text-[8px] bg-slate-800 text-muted-foreground border border-background shrink-0 shadow-sm">
+                      +{assignees.length - 3}
+                    </div>
+                  )}
+                  {assignees.length === 0 && (
+                    <span className="text-xs text-muted-foreground">Unassigned</span>
+                  )}
+                </div>
+                <span className="text-xs font-semibold whitespace-nowrap truncate max-w-[140px]">
+                  {names}
+                </span>
               </div>
-              <span className="text-xs font-semibold whitespace-nowrap truncate max-w-[140px]">
-                {names}
-              </span>
+              {row.original.qaOwner && (
+                <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <span className="text-[9px] font-bold text-emerald-400 bg-emerald-500/10 px-1 rounded border border-emerald-500/20">QA</span>
+                  <span className="truncate max-w-[120px]">{row.original.qaOwner.name}</span>
+                </div>
+              )}
             </div>
           );
         }
@@ -573,19 +611,6 @@ export default function AllTasksPage() {
           </button>
         ),
         cell: ({ row }) => <PriorityBadge priority={row.original.priority} showIcon={false} />
-      },
-      {
-        accessorKey: 'status',
-        header: ({ column }) => (
-          <button
-            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-            className="flex items-center gap-1 hover:text-foreground text-left font-bold text-xs tracking-wider uppercase cursor-pointer"
-          >
-            Status
-            <ArrowUpDown className="h-3 w-3" />
-          </button>
-        ),
-        cell: ({ row }) => <StatusBadge status={row.original.status} />
       },
       {
         accessorKey: 'expectedCompletionDate',
@@ -986,6 +1011,33 @@ export default function AllTasksPage() {
                     <option value="high">High</option>
                     <option value="critical">Critical</option>
                   </select>
+                </div>
+
+                {/* Issue Type Select */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-muted-foreground">Issue Type</label>
+                  <select
+                    value={filterIssueType}
+                    onChange={(e) => setFilterIssueType(e.target.value)}
+                    className="w-full px-2 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none cursor-pointer focus:border-primary/40 text-foreground"
+                  >
+                    <option value="all">All Issue Types</option>
+                    {ISSUE_TYPES.map(it => (
+                      <option key={it.value} value={it.value}>{it.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* QA Owner Search */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-muted-foreground">QA Owner</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. QA or Name"
+                    value={filterQaOwner}
+                    onChange={(e) => setFilterQaOwner(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-border rounded-lg bg-background/40 text-xs outline-none focus:border-primary/40 text-foreground"
+                  />
                 </div>
 
                 {/* Module Search */}

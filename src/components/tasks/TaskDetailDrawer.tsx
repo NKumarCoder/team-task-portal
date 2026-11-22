@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X,
@@ -26,15 +27,19 @@ import {
   History,
   Lock,
   CheckSquare,
-  Square
+  Square,
+  ExternalLink,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { Task, ActivityLog, Member, Subtask, TaskStatus } from '@/types';
 import PriorityBadge from './PriorityBadge';
 import StatusBadge from './StatusBadge';
+import IssueTypeBadge from './IssueTypeBadge';
 import StatusUpdateModal from './StatusUpdateModal';
 import { ACTIVE_TASK_STATUS_LIST, TASK_STATUS_CONFIG } from '@/constants';
 import { formatDate, formatTimeAgo, getTaskAssignees, isUserAssignedToTask, getTaskEstimatedDays, formatEstimatedDays } from '@/utils';
-import { canAddCoAssignee } from '@/utils/permissions';
+import { canAddCoAssignee, getAllowedStatusTransitions, canTransitionToStatus, isTaskQaOwner } from '@/utils/permissions';
 import AddCoAssigneePopover from '@/components/ui/AddCoAssigneePopover';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
@@ -78,16 +83,62 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
   const [statusModalTarget, setStatusModalTarget] = useState<TaskStatus | null>(null);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
 
+  // Watcher State (Batch 4)
+  const [isTogglingWatch, setIsTogglingWatch] = useState(false);
+
+  const isWatching = useMemo(() => {
+    if (!user?.email || !task) return false;
+    const email = user.email.toLowerCase();
+    return Boolean(
+      task.watcherIds?.includes(email) ||
+      task.watchers?.some(w => (w.email || w.id || '').toLowerCase() === email)
+    );
+  }, [user?.email, task]);
+
+  const handleToggleWatch = async () => {
+    if (!task?.id || !user?.email) return;
+    setIsTogglingWatch(true);
+    try {
+      if (isWatching) {
+        await dbService.unwatchTask(task.id, user.email, user.displayName);
+        toast.success(`You stopped watching ${task.taskId}`);
+      } else {
+        await dbService.watchTask(task.id, {
+          email: user.email,
+          name: user.displayName,
+          avatarColor: user.avatarColor,
+          uid: user.uid
+        });
+        toast.success(`You are now watching ${task.taskId}`);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to update watch status');
+    } finally {
+      setIsTogglingWatch(false);
+    }
+  };
+
   // Refs
   const activitiesEndRef = useRef<HTMLDivElement>(null);
 
   const isEmployee = user?.role === 'Member';
   const isManager = user?.role === 'Admin' || user?.role === 'SuperAdmin';
   const userCanAddCoAssignee = canAddCoAssignee(task, user);
-  const canChangeStatus = isManager || (isEmployee && isUserAssignedToTask(task, user?.email));
+
+  const allowedStatuses = useMemo(() => {
+    return getAllowedStatusTransitions(task, user);
+  }, [task, user]);
+
+  const canChangeStatus = isManager || allowedStatuses.length > 0;
 
   const handleSelectStatus = async (newStatus: TaskStatus) => {
     if (!task || newStatus === task.status) return;
+
+    const check = canTransitionToStatus(task, newStatus, user);
+    if (!check.allowed) {
+      toast.error(check.reason || 'You do not have permission to transition to this status.');
+      return;
+    }
     
     if (newStatus === 'uat-rejected') {
       setStatusModalTarget(newStatus);
@@ -96,7 +147,7 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
     }
 
     try {
-      await dbService.updateTask(task.id!, { status: newStatus }, user?.email || '', user?.displayName || '');
+      await dbService.updateTask(task.id!, { status: newStatus }, user?.email || '', user?.displayName || '', undefined, user?.role);
       toast.success(`Status updated to ${TASK_STATUS_CONFIG[newStatus]?.label || newStatus}`);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to update status');
@@ -105,8 +156,19 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
 
   const handleConfirmStatusChange = async (targetStatus: TaskStatus, comment: string) => {
     if (!task?.id) return;
-    await dbService.updateTask(task.id, { status: targetStatus }, user?.email || '', user?.displayName || '', comment);
-    toast.success(`Status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
+
+    const check = canTransitionToStatus(task, targetStatus, user);
+    if (!check.allowed) {
+      toast.error(check.reason || 'You do not have permission to transition to this status.');
+      return;
+    }
+
+    try {
+      await dbService.updateTask(task.id, { status: targetStatus }, user?.email || '', user?.displayName || '', comment, user?.role);
+      toast.success(`Status updated to ${TASK_STATUS_CONFIG[targetStatus]?.label || targetStatus}`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to update status');
+    }
   };
 
   // Real-time task sync
@@ -159,6 +221,17 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
   const subtasks = task?.subtasks || [];
   const completedSubtasks = subtasks.filter(s => s.status === 'completed').length;
   const subtasksPercent = subtasks.length > 0 ? Math.round((completedSubtasks / subtasks.length) * 100) : 0;
+
+  // Child tasks calculation
+  const childTasks = useMemo(() => {
+    if (!task) return [];
+    const taskIdKey = task.id || '';
+    const seqKey = task.taskId || '';
+    return allTasks.filter(t => t.parentTaskId && (t.parentTaskId === taskIdKey || t.parentTaskId === seqKey));
+  }, [allTasks, task]);
+
+  const completedChildTasks = childTasks.filter(t => ['completed', 'moved-to-live', 'prod-deployed', 'deployed'].includes(t.status)).length;
+  const childProgress = childTasks.length > 0 ? Math.round((completedChildTasks / childTasks.length) * 100) : 0;
 
   // Dependency calculations
   const dependenciesList = task?.dependencies || [];
@@ -246,10 +319,34 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
               {/* Header */}
               <div className="flex justify-between items-start pb-4 border-b border-slate-800 shrink-0">
                 <div>
-                  <span className="text-[10px] font-bold text-gray-400 font-mono uppercase tracking-wider">{task.taskId}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-gray-400 font-mono uppercase tracking-wider">{task.taskId}</span>
+                    <IssueTypeBadge issueType={task.issueType} />
+                  </div>
                   <h2 className="text-xl font-semibold text-white mt-1">{task.title}</h2>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleToggleWatch}
+                    disabled={isTogglingWatch}
+                    className={`p-2 rounded-lg cursor-pointer transition-all ${
+                      isWatching 
+                        ? 'text-primary bg-primary/15 hover:bg-primary/25 border border-primary/30' 
+                        : 'text-gray-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                    title={isWatching ? `Watching (${task.watchers?.length || 0}) - Click to stop watching` : `Watch task (${task.watchers?.length || 0})`}
+                  >
+                    {isWatching ? <EyeOff className="h-4.5 w-4.5" /> : <Eye className="h-4.5 w-4.5" />}
+                  </button>
+                  <Link
+                    href={`/dashboard/tasks/${task.id || task.taskId}`}
+                    onClick={onClose}
+                    className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-slate-800 cursor-pointer transition-all"
+                    title="Open Dedicated Task Page"
+                  >
+                    <ExternalLink className="h-4.5 w-4.5" />
+                  </Link>
                   {onEditClick && (!isEmployee || isUserAssignedToTask(task, user?.email)) && (
                     <button
                       onClick={() => onEditClick(task)}
@@ -299,11 +396,21 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                           onChange={(e) => handleSelectStatus(e.target.value as TaskStatus)}
                           className="text-[10px] bg-slate-800/90 text-primary border border-slate-700 rounded-md px-1.5 py-0.5 outline-none cursor-pointer hover:border-primary/50 transition-colors"
                         >
-                          {ACTIVE_TASK_STATUS_LIST.map((st) => (
-                            <option key={st} value={st}>
-                              {TASK_STATUS_CONFIG[st]?.label || st}
-                            </option>
-                          ))}
+                          {ACTIVE_TASK_STATUS_LIST.map((st) => {
+                            const isCurrent = st === task.status;
+                            const isAllowed = isManager || allowedStatuses.includes(st) || isCurrent;
+                            let suffix = '';
+                            if (!isAllowed) {
+                              if (['uat-deployed', 'prod-deployed', 'completed'].includes(st)) suffix = ' (Admin)';
+                              else if (['uat-testing', 'uat-rejected', 'ready-for-production-deploy'].includes(st)) suffix = ' (QA)';
+                              else suffix = ' (Dev)';
+                            }
+                            return (
+                              <option key={st} value={st} disabled={!isAllowed}>
+                                {TASK_STATUS_CONFIG[st]?.label || st}{suffix}
+                              </option>
+                            );
+                          })}
                         </select>
                       )}
                     </div>
@@ -315,15 +422,25 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                   </div>
                 </div>
 
-                {/* UAT Rejection Reason Banner (if UAT Rejected) */}
-                {task.status === 'uat-rejected' && (
+                {/* UAT Rejection Reason Banner */}
+                {(task.status === 'uat-rejected' || (task.rejectionHistory && task.rejectionHistory.length > 0)) && (
                   <div className="bg-rose-950/40 border border-rose-800/60 rounded-xl p-4 space-y-2 shadow-inner">
-                    <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
-                      <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
-                      <span className="uppercase tracking-wider text-[10px]">UAT Rejection Reason</span>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-rose-400 font-bold text-xs">
+                        <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+                        <span className="uppercase tracking-wider text-[10px]">
+                          {task.status === 'uat-rejected' ? 'UAT Rejection Reason' : 'Previous UAT Rejection History'}
+                        </span>
+                      </div>
+                      {task.rejectionHistory && task.rejectionHistory.length > 1 && (
+                        <span className="text-[10px] text-rose-300 font-mono">
+                          {task.rejectionHistory.length} rejections
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-rose-200 leading-relaxed whitespace-pre-wrap pl-6 font-medium">
                       {task.latestRejectionReason || 
+                       (task.rejectionHistory && task.rejectionHistory[task.rejectionHistory.length - 1]?.reason) ||
                        (task.statusHistory && [...task.statusHistory].reverse().find(h => h.status === 'uat-rejected')?.comment) || 
                        task.remarks || 
                        'No rejection reason recorded.'}
@@ -333,6 +450,23 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
 
                 {/* Task Details */}
                 <div className="space-y-4">
+                  {/* Parent Task Link */}
+                  {task.parentTaskId && (
+                    <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-gray-400 block tracking-wider">Parent Task</span>
+                        <Link
+                          href={`/dashboard/tasks/${task.parentTaskId}`}
+                          onClick={onClose}
+                          className="text-xs font-semibold text-primary hover:underline flex items-center gap-1.5 mt-0.5"
+                        >
+                          <span>{task.parentTaskTitle || task.parentTaskId}</span>
+                          <ExternalLink className="h-3 w-3" />
+                        </Link>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Project & Module */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -377,6 +511,76 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                         </button>
                       )}
                     </div>
+                  </div>
+
+                  {/* QA Owner */}
+                  {task.qaOwner && (
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-gray-400 block mb-2 tracking-wider">QA Owner</label>
+                      <div className="inline-flex items-center gap-2 bg-slate-900 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div
+                          className="w-5 h-5 rounded-full flex items-center justify-center font-bold text-white text-[9px] shrink-0"
+                          style={{ backgroundColor: task.qaOwner.color || '#10b981' }}
+                        >
+                          {task.qaOwner.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-xs font-semibold text-gray-300">{task.qaOwner.name}</span>
+                        <span className="text-[9px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">QA</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Watchers Section (Batch 4) */}
+                  <div className="pt-2 border-t border-slate-800/80">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-1.5 text-gray-400">
+                        <Eye className="h-3.5 w-3.5" />
+                        <span className="text-[10px] uppercase font-bold tracking-wider">
+                          Watchers ({task.watchers?.length || 0})
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleToggleWatch}
+                        disabled={isTogglingWatch}
+                        className="text-[10px] text-primary hover:underline font-bold cursor-pointer"
+                      >
+                        {isWatching ? 'Stop Watching' : '+ Watch Task'}
+                      </button>
+                    </div>
+
+                    {task.watchers && task.watchers.length > 0 ? (
+                      <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                        {task.watchers.map((w, idx) => (
+                          <div
+                            key={w.id || w.email || `drawer-watcher-${idx}`}
+                            className="flex items-center justify-between p-1.5 rounded-md bg-slate-900/70 border border-slate-800 text-xs"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div
+                                className="w-5 h-5 rounded-full flex items-center justify-center font-bold text-white text-[9px] shrink-0"
+                                style={{ backgroundColor: w.avatarColor || '#3b82f6' }}
+                              >
+                                {(w.name || w.email).charAt(0).toUpperCase()}
+                              </div>
+                              <p className="text-xs font-medium text-gray-300 truncate" title={w.name || w.email}>
+                                {w.name || w.email.split('@')[0]}
+                                {user?.email && w.email.toLowerCase() === user.email.toLowerCase() && (
+                                  <span className="text-[9px] text-primary ml-1 font-bold">(You)</span>
+                                )}
+                              </p>
+                            </div>
+                            <span className="text-[9px] text-gray-500 whitespace-nowrap">
+                              {formatTimeAgo(w.watchedAt)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500 italic">
+                        No watchers yet. Click Watch to receive updates.
+                      </p>
+                    )}
                   </div>
 
                   {/* Estimated Effort & Due Date */}
@@ -485,6 +689,46 @@ export default function TaskDetailDrawer({ isOpen, onClose, task: initialTask, o
                           </div>
                         );
                       })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Child Tasks / Sub-issues */}
+                {childTasks.length > 0 && (
+                  <div className="space-y-3 bg-slate-900/60 border border-slate-800 p-3.5 rounded-xl">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <label className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">
+                          Child Tasks ({completedChildTasks}/{childTasks.length})
+                        </label>
+                      </div>
+                      <span className="text-xs font-bold text-primary">{childProgress}%</span>
+                    </div>
+
+                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-primary h-full transition-all duration-300 rounded-full"
+                        style={{ width: `${childProgress}%` }}
+                      />
+                    </div>
+
+                    <div className="space-y-1.5 pt-1">
+                      {childTasks.map(child => (
+                        <Link
+                          key={child.id || child.taskId}
+                          href={`/dashboard/tasks/${child.id || child.taskId}`}
+                          onClick={onClose}
+                          className="flex items-center justify-between p-2 rounded-lg bg-slate-950/60 hover:bg-slate-800/60 border border-slate-800/80 transition-all group"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <IssueTypeBadge issueType={child.issueType} />
+                            <span className="text-xs text-gray-300 font-medium truncate group-hover:text-primary transition-colors">
+                              {child.taskId ? `[${child.taskId}] ` : ''}{child.title}
+                            </span>
+                          </div>
+                          <StatusBadge status={child.status} />
+                        </Link>
+                      ))}
                     </div>
                   </div>
                 )}

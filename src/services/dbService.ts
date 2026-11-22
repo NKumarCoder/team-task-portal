@@ -14,7 +14,8 @@ import {
   limit,
   collection,
   deleteField,
-  writeBatch
+  writeBatch,
+  increment
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from '../firebase/config';
 import { 
@@ -28,8 +29,9 @@ import {
   projectsCollection,
   todosCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem } from '../types';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User } from '../types';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients } from '../utils';
+import { canTransitionToStatus, isSuperAdminEmail } from '../utils/permissions';
 import { MAX_ASSIGNEES } from '../constants';
 
 // Helper to prevent Firestore from hanging forever when offline or unconfigured
@@ -61,6 +63,8 @@ export interface MailAttachment {
 }
 
 class DBService {
+  private prefCache = new Map<string, { prefs: NotificationPreferences; timestamp: number }>();
+
   constructor() {
     // No localStorage initialization - Firebase only
   }
@@ -216,6 +220,33 @@ class DBService {
     }
   }
 
+  async getTaskById(id: string): Promise<Task | null> {
+    console.log("[dbService] Fetching task by ID:", id);
+    try {
+      // 1. Direct document lookup by doc ID
+      const docRef = doc(db, 'tasks', id);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const data = snap.data();
+        if (!data.isDeleted) {
+          return { id: snap.id, ...data } as Task;
+        }
+      }
+
+      // 2. Lookup by sequence taskId (e.g. TASK-000001)
+      const q = query(tasksCollection, where('taskId', '==', id), where('isDeleted', '==', false));
+      const qSnap = await getDocs(q);
+      if (!qSnap.empty) {
+        const d = qSnap.docs[0];
+        return { id: d.id, ...d.data() } as Task;
+      }
+      return null;
+    } catch (err) {
+      console.error("[dbService] Error getting task by ID:", err);
+      return null;
+    }
+  }
+
   async addTask(
     task: Omit<Task, 'id' | 'taskId' | 'isDeleted'>,
     userEmail?: string,
@@ -249,6 +280,7 @@ class DBService {
       user: userEmail || task.createdBy,
       userName: userName || 'Team Member',
       action: 'Task Created',
+      fieldName: 'Task',
       oldValue: '',
       newValue: `Created under ${task.projectName}`,
       timestamp: new Date().toISOString()
@@ -383,7 +415,14 @@ class DBService {
     return null;
   }
 
-  async updateTask(id: string, updates: Partial<Task>, userEmail?: string, userName?: string, statusComment?: string): Promise<void> {
+  async updateTask(
+    id: string,
+    updates: Partial<Task>,
+    userEmail?: string,
+    userName?: string,
+    statusComment?: string,
+    userRole?: UserRole
+  ): Promise<void> {
     console.log("[dbService] Updating task:", id);
     const start = performance.now();
 
@@ -391,6 +430,28 @@ class DBService {
     const allTasks = await this.getTasks();
     const original = allTasks.find(t => t.id === id);
     if (!original) return;
+
+    // Check Role-Based Status Transition Permissions
+    if (updates.status && updates.status !== original.status) {
+      let effectiveRole: UserRole = userRole || (userEmail && isSuperAdminEmail(userEmail) ? 'SuperAdmin' : 'Member');
+      if (!userRole && userEmail) {
+        const members = await this.getMembers();
+        const foundMem = members.find(m => m.email.toLowerCase() === userEmail.toLowerCase());
+        if (foundMem?.role) effectiveRole = foundMem.role;
+      }
+      const permCheck = canTransitionToStatus(original, updates.status, { email: userEmail, role: effectiveRole });
+      if (!permCheck.allowed) {
+        throw new Error(permCheck.reason || 'You are not authorized to perform this status transition.');
+      }
+    }
+
+    // Check Mandatory UAT Rejection Reason
+    if (updates.status === 'uat-rejected') {
+      const effectiveReason = (statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '').trim();
+      if (!effectiveReason) {
+        throw new Error('A rejection reason is strictly required when rejecting a task during UAT.');
+      }
+    }
 
     // Check Dependency Block when marking completed / live / deployed
     if (updates.status === 'completed' || updates.status === 'prod-deployed' || updates.status === 'moved-to-live' || updates.status === 'deployed') {
@@ -411,22 +472,30 @@ class DBService {
     delete payload.taskId;
 
     if (updates.status && updates.status !== original.status) {
+      const effectiveComment = (statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '').trim();
       const historyItem: TaskStatusHistory = {
         status: updates.status,
         previousStatus: original.status,
         updatedBy: logUser,
         updatedByName: logUserName,
         updatedAt: new Date().toISOString(),
-        comment: statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '',
-        remarks: statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '',
+        comment: effectiveComment,
+        remarks: effectiveComment,
       };
 
       payload.statusHistory = [...(original.statusHistory || []), historyItem];
 
       if (updates.status === 'uat-rejected') {
-        payload.latestRejectionReason = statusComment || (typeof updates.remarks === 'string' ? updates.remarks : '') || '';
-      } else {
-        payload.latestRejectionReason = ''; // Clear previous rejection reason once moved to development/testing/etc.
+        const rejectionRecord: RejectionRecord = {
+          id: `rej-${Date.now()}`,
+          reason: effectiveComment,
+          rejectedBy: logUser,
+          rejectedByName: logUserName,
+          rejectedAt: new Date().toISOString(),
+          previousStatus: original.status
+        };
+        payload.rejectionHistory = [...(original.rejectionHistory || []), rejectionRecord];
+        payload.latestRejectionReason = effectiveComment;
       }
     }
 
@@ -460,6 +529,7 @@ class DBService {
         user: logUser,
         userName: logUserName,
         action: actionLabel,
+        fieldName: 'Status',
         oldValue: original.status.replace(/-/g, ' '),
         newValue: updates.status.replace(/-/g, ' '),
         timestamp: new Date().toISOString()
@@ -492,6 +562,16 @@ class DBService {
           });
         }
       }
+
+      // Notify task watchers about status change (excluding updater and assignees)
+      await this.notifyTaskWatchers(original, {
+        title: notifTitle,
+        message: notifMsg,
+        type: updates.status === 'uat-rejected' ? 'uat-rejected' : 'status-change',
+        senderEmail: logUser,
+        senderName: logUserName,
+        excludeEmails: [logUser, ...currentAssigneeIds]
+      });
 
       // Trigger Email Notification in the background on status change (sent to all assignees, CC to updater/creator)
       try {
@@ -775,6 +855,22 @@ class DBService {
       }
     }
 
+    // Title updates
+    if (updates.title && updates.title !== original.title) {
+      await this.logActivity({
+        taskId: id,
+        taskSeqId: original.taskId,
+        taskTitle: updates.title,
+        user: logUser,
+        userName: logUserName,
+        action: 'Task Title Changed',
+        fieldName: 'Title',
+        oldValue: original.title,
+        newValue: updates.title,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Reassignment / Assignee list updates
     const isAssigneesUpdated = updates.assignees !== undefined || updates.assigneeIds !== undefined || updates.assigneeId !== undefined;
     if (isAssigneesUpdated) {
@@ -795,6 +891,7 @@ class DBService {
           user: logUser,
           userName: logUserName,
           action: actionLabel,
+          fieldName: 'Assignees',
           oldValue: getTaskAssigneeNames(original),
           newValue: getTaskAssigneeNames(updates),
           timestamp: new Date().toISOString()
@@ -812,6 +909,16 @@ class DBService {
             timestamp: new Date().toISOString()
           });
         }
+
+        // Notify watchers about assignee updates
+        await this.notifyTaskWatchers(original, {
+          title: 'Task Assignees Updated',
+          message: `${logUserName} updated assignees on task ${original.taskId}: "${original.title}".`,
+          type: 'task-update',
+          senderEmail: logUser,
+          senderName: logUserName,
+          excludeEmails: [logUser, ...addedIds, ...oldIds, ...newIds]
+        });
       }
     }
 
@@ -823,6 +930,7 @@ class DBService {
         user: logUser,
         userName: logUserName,
         action: 'Priority Changed',
+        fieldName: 'Priority',
         oldValue: original.priority,
         newValue: updates.priority,
         timestamp: new Date().toISOString()
@@ -842,6 +950,16 @@ class DBService {
           });
         }
       }
+
+      // Notify watchers about priority change
+      await this.notifyTaskWatchers(original, {
+        title: 'Priority Changed',
+        message: `${logUserName} updated priority of task ${original.taskId} to "${updates.priority.toUpperCase()}".`,
+        type: 'priority-change',
+        senderEmail: logUser,
+        senderName: logUserName,
+        excludeEmails: [logUser, ...targetAssigneeIds]
+      });
     }
 
     if (updates.expectedCompletionDate && updates.expectedCompletionDate !== original.expectedCompletionDate) {
@@ -852,6 +970,7 @@ class DBService {
         user: logUser,
         userName: logUserName,
         action: 'Due Date Changed',
+        fieldName: 'Due Date',
         oldValue: formatDate(original.expectedCompletionDate),
         newValue: formatDate(updates.expectedCompletionDate),
         timestamp: new Date().toISOString()
@@ -871,6 +990,16 @@ class DBService {
           });
         }
       }
+
+      // Notify watchers about due date update
+      await this.notifyTaskWatchers(original, {
+        title: 'Due Date Updated',
+        message: `${logUserName} updated due date of task ${original.taskId} to ${formatDate(updates.expectedCompletionDate)}.`,
+        type: 'due-date',
+        senderEmail: logUser,
+        senderName: logUserName,
+        excludeEmails: [logUser, ...targetAssigneeIds]
+      });
     }
 
     if (updates.description && updates.description !== original.description) {
@@ -881,9 +1010,20 @@ class DBService {
         user: logUser,
         userName: logUserName,
         action: 'Description Updated',
+        fieldName: 'Description',
         oldValue: original.description ? (original.description.slice(0, 50) + (original.description.length > 50 ? '...' : '')) : 'None',
         newValue: updates.description.slice(0, 50) + (updates.description.length > 50 ? '...' : ''),
         timestamp: new Date().toISOString()
+      });
+
+      // Notify watchers about description update
+      await this.notifyTaskWatchers(original, {
+        title: 'Task Description Updated',
+        message: `${logUserName} updated the description of task ${original.taskId}: "${original.title}".`,
+        type: 'task-update',
+        senderEmail: logUser,
+        senderName: logUserName,
+        excludeEmails: [logUser, ...getTaskAssigneeIds(original)]
       });
     }
 
@@ -895,8 +1035,68 @@ class DBService {
         user: logUser,
         userName: logUserName,
         action: 'Remarks Updated',
+        fieldName: 'Remarks',
         oldValue: original.remarks || 'None',
         newValue: updates.remarks,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (updates.issueType && updates.issueType !== (original.issueType || 'Task')) {
+      await this.logActivity({
+        taskId: id,
+        taskSeqId: original.taskId,
+        taskTitle: original.title,
+        user: logUser,
+        userName: logUserName,
+        action: 'Issue Type Changed',
+        fieldName: 'Issue Type',
+        oldValue: original.issueType || 'Task',
+        newValue: updates.issueType,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    if (updates.qaOwner !== undefined) {
+      const oldQaName = original.qaOwner?.name || original.qaOwnerName || 'Unassigned';
+      const newQaName = updates.qaOwner?.name || updates.qaOwnerName || 'Unassigned';
+      if (oldQaName !== newQaName) {
+        await this.logActivity({
+          taskId: id,
+          taskSeqId: original.taskId,
+          taskTitle: original.title,
+          user: logUser,
+          userName: logUserName,
+          action: 'QA Owner Changed',
+          fieldName: 'QA Owner',
+          oldValue: oldQaName,
+          newValue: newQaName,
+          timestamp: new Date().toISOString()
+        });
+
+        // Notify watchers about QA Owner update
+        await this.notifyTaskWatchers(original, {
+          title: 'QA Owner Changed',
+          message: `${logUserName} updated QA Owner of task ${original.taskId} to "${newQaName}".`,
+          type: 'task-update',
+          senderEmail: logUser,
+          senderName: logUserName,
+          excludeEmails: [logUser, ...getTaskAssigneeIds(original), updates.qaOwner?.id || '']
+        });
+      }
+    }
+
+    if (updates.parentTaskId !== undefined && (updates.parentTaskId || '') !== (original.parentTaskId || '')) {
+      await this.logActivity({
+        taskId: id,
+        taskSeqId: original.taskId,
+        taskTitle: original.title,
+        user: logUser,
+        userName: logUserName,
+        action: 'Parent Task Changed',
+        fieldName: 'Parent Task',
+        oldValue: original.parentTaskTitle || original.parentTaskId || 'None',
+        newValue: updates.parentTaskTitle || updates.parentTaskId || 'None',
         timestamp: new Date().toISOString()
       });
     }
@@ -933,6 +1133,7 @@ class DBService {
         user: deletedBy,
         userName: userName || deletedBy.split('@')[0],
         action: 'Task Deleted (Soft Delete)',
+        fieldName: 'Task',
         oldValue: 'Active',
         newValue: 'Soft Deleted',
         timestamp: new Date().toISOString()
@@ -974,6 +1175,7 @@ class DBService {
         user: restoredBy,
         userName: userName || restoredBy.split('@')[0],
         action: 'Task Restored',
+        fieldName: 'Task',
         oldValue: 'Soft Deleted',
         newValue: 'Restored',
         timestamp: new Date().toISOString()
@@ -1058,6 +1260,7 @@ class DBService {
         user: addedBy,
         userName: addedByName || addedBy.split('@')[0],
         action: 'Co-Assignee Added',
+        fieldName: 'Assignees',
         oldValue: getTaskAssigneeNames(task),
         newValue: `${newAssigneeObj.name} (Now: ${getTaskAssigneeNames({ assignees: updatedAssignees })})`,
         timestamp: new Date().toISOString()
@@ -1251,6 +1454,7 @@ class DBService {
       user: userEmail,
       userName,
       action: 'Checklist Updated',
+      fieldName: 'Checklist',
       oldValue: `Checklist progress was ${oldPercent}%`,
       newValue: `Checklist progress is ${newPercent}%`,
       timestamp: new Date().toISOString()
@@ -1360,14 +1564,35 @@ class DBService {
 
   async addComment(comment: Omit<Comment, 'id'>, taskSeqId?: string, taskTitle?: string): Promise<Comment> {
     const start = performance.now();
-    const docRef = await addDoc(commentsCollection, comment);
-    const savedComment = { ...comment, id: docRef.id };
+    const isReply = Boolean(comment.parentId);
+    const docRef = await addDoc(commentsCollection, {
+      ...comment,
+      replyCount: 0,
+      timestamp: comment.timestamp || new Date().toISOString()
+    });
+    const savedComment: Comment = { ...comment, id: docRef.id, replyCount: 0 };
     const end = performance.now();
-    console.log(`[dbService] [Firestore] Collection Name: comments, Operation: ADD, Execution Time: ${(end - start).toFixed(2)}ms`);
+    console.log(`[dbService] [Firestore] Collection Name: taskComments, Operation: ADD, Execution Time: ${(end - start).toFixed(2)}ms`);
+
+    // If it's a reply, increment parent comment's replyCount
+    if (comment.parentId) {
+      try {
+        const parentDocRef = doc(commentsCollection, comment.parentId);
+        await updateDoc(parentDocRef, {
+          replyCount: increment(1)
+        });
+      } catch (err) {
+        console.error("Failed to increment parent comment reply count:", err);
+      }
+    }
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('comments-updated'));
     }
+
+    // Snippet for activity and notification
+    const snippet = comment.content.replace(/@\[([^\]]+)\]\(([^)]+)\)/g, '@$1');
+    const displaySnippet = snippet.length > 35 ? snippet.substring(0, 35) + '...' : snippet;
 
     // Log Activity
     await this.logActivity({
@@ -1376,9 +1601,10 @@ class DBService {
       taskTitle: taskTitle || 'Task',
       user: comment.userId,
       userName: comment.userName,
-      action: 'Comment Added',
+      action: isReply ? 'Reply Added' : 'Comment Added',
+      fieldName: 'Comments',
       oldValue: '',
-      newValue: comment.content.length > 30 ? comment.content.substring(0, 30) + '...' : comment.content,
+      newValue: displaySnippet,
       timestamp: new Date().toISOString()
     });
 
@@ -1387,16 +1613,19 @@ class DBService {
     let match;
     const mentions = new Set<string>();
     while ((match = mentionRegex.exec(comment.content)) !== null) {
-      mentions.add(match[2]); // match[2] is the email of the user
+      mentions.add(match[2]); // match[2] is the userId/email
     }
 
     for (const email of Array.from(mentions)) {
       if (email.toLowerCase() !== comment.userId.toLowerCase()) {
         await this.addNotification({
           userId: email,
-          title: 'Mentioned in Comment',
-          message: `${comment.userName} mentioned you in task ${taskSeqId || 'details'}: "${comment.content.substring(0, 40)}"`,
+          title: isReply ? 'Mentioned in Reply' : 'Mentioned in Comment',
+          message: `${comment.userName} mentioned you in task ${taskSeqId || 'details'}: "${displaySnippet}"`,
           taskId: comment.taskId,
+          commentId: savedComment.id,
+          senderEmail: comment.userId,
+          senderName: comment.userName,
           type: 'mention',
           read: false,
           timestamp: new Date().toISOString()
@@ -1404,49 +1633,177 @@ class DBService {
       }
     }
 
-    // Notify all task assignees if they are not the commenter and not already notified via mention
-    try {
-      const tasks = await this.getTasks();
-      const task = tasks.find(t => t.id === comment.taskId);
-      if (task) {
-        const assigneeEmails = getTaskAssigneeIds(task);
-        for (const assigneeEmail of assigneeEmails) {
-          if (assigneeEmail.toLowerCase() !== comment.userId.toLowerCase() && !mentions.has(assigneeEmail)) {
+    // If reply: also notify parent comment author if not commenter and not already notified
+    if (isReply && comment.parentId) {
+      try {
+        const parentSnap = await getDoc(doc(commentsCollection, comment.parentId));
+        if (parentSnap.exists()) {
+          const parentData = parentSnap.data() as Comment;
+          const parentAuthor = parentData.userId;
+          if (parentAuthor && parentAuthor.toLowerCase() !== comment.userId.toLowerCase() && !mentions.has(parentAuthor)) {
             await this.addNotification({
-              userId: assigneeEmail,
-              title: 'Comment Added',
-              message: `${comment.userName} commented on task ${task.taskId || 'assigned to you'}: "${comment.content.substring(0, 45)}"`,
+              userId: parentAuthor,
+              title: 'New Reply to your Comment',
+              message: `${comment.userName} replied to your comment on task ${taskSeqId || 'details'}: "${displaySnippet}"`,
               taskId: comment.taskId,
-              type: 'comment-added',
+              commentId: savedComment.id,
+              senderEmail: comment.userId,
+              senderName: comment.userName,
+              type: 'reply-added',
               read: false,
               timestamp: new Date().toISOString()
             });
           }
         }
+      } catch (err) {
+        console.error("Failed to notify parent comment author:", err);
       }
-    } catch (err) {
-      console.error("[dbService] Failed to send assignee comment notification:", err);
+    } else {
+      // If root comment: notify task assignees if not commenter and not already notified
+      try {
+        const tasks = await this.getTasks();
+        const task = tasks.find(t => t.id === comment.taskId);
+        if (task) {
+          const assigneeEmails = getTaskAssigneeIds(task);
+          for (const assigneeEmail of assigneeEmails) {
+            if (assigneeEmail.toLowerCase() !== comment.userId.toLowerCase() && !mentions.has(assigneeEmail)) {
+              await this.addNotification({
+                userId: assigneeEmail,
+                title: 'Comment Added',
+                message: `${comment.userName} commented on task ${task.taskId || 'assigned to you'}: "${displaySnippet}"`,
+                taskId: comment.taskId,
+                commentId: savedComment.id,
+                senderEmail: comment.userId,
+                senderName: comment.userName,
+                type: 'comment-added',
+                read: false,
+                timestamp: new Date().toISOString()
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[dbService] Failed to send assignee comment notification:", err);
+      }
+    }
+
+    // Notify task watchers about new comment / reply (excluding commenter, mentions, parentAuthor, assignees)
+    try {
+      const tasks = await this.getTasks();
+      const taskObj = tasks.find(t => t.id === comment.taskId);
+      if (taskObj && taskObj.watchers && taskObj.watchers.length > 0) {
+        const excludeCommentEmails = [comment.userId, ...Array.from(mentions), ...getTaskAssigneeIds(taskObj)];
+        if (isReply && comment.parentId) {
+          const parentSnap = await getDoc(doc(commentsCollection, comment.parentId));
+          if (parentSnap.exists()) {
+            const parentData = parentSnap.data() as Comment;
+            if (parentData.userId) excludeCommentEmails.push(parentData.userId);
+          }
+        }
+        await this.notifyTaskWatchers(taskObj, {
+          title: isReply ? 'New Reply on Watched Task' : 'New Comment on Watched Task',
+          message: `${comment.userName} ${isReply ? 'replied on' : 'commented on'} watched task ${taskSeqId || taskObj.taskId}: "${displaySnippet}"`,
+          type: isReply ? 'reply-added' : 'comment-added',
+          commentId: savedComment.id,
+          senderEmail: comment.userId,
+          senderName: comment.userName,
+          excludeEmails: excludeCommentEmails
+        });
+      }
+    } catch (watchErr) {
+      console.error("[dbService] Failed to notify watchers of comment:", watchErr);
     }
 
     return savedComment;
   }
 
-  async deleteComment(id: string): Promise<void> {
-    const commentDoc = doc(db, 'comments', id);
-    await deleteDoc(commentDoc);
+  async deleteComment(
+    comment: Comment,
+    userEmail: string,
+    userName: string,
+    taskSeqId?: string,
+    taskTitle?: string
+  ): Promise<void> {
+    if (!comment.id) return;
+    const isReply = Boolean(comment.parentId);
+
+    if (!isReply && (comment.replyCount || 0) > 0) {
+      // Soft-delete parent comment to ensure threaded replies are never orphaned
+      await updateDoc(doc(commentsCollection, comment.id), {
+        isDeleted: true,
+        content: '[Comment deleted]'
+      });
+    } else {
+      await deleteDoc(doc(commentsCollection, comment.id));
+      if (isReply && comment.parentId) {
+        try {
+          await updateDoc(doc(commentsCollection, comment.parentId), {
+            replyCount: increment(-1)
+          });
+        } catch (err) {
+          console.error("Failed to decrement parent comment reply count:", err);
+        }
+      }
+    }
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('comments-updated'));
     }
+
+    // Log Activity
+    const snippet = comment.content.replace(/@\[([^\]]+)\]\(([^)]+)\)/g, '@$1');
+    const displaySnippet = snippet.length > 35 ? snippet.substring(0, 35) + '...' : snippet;
+
+    await this.logActivity({
+      taskId: comment.taskId,
+      taskSeqId: taskSeqId || 'TASK-ID',
+      taskTitle: taskTitle || 'Task',
+      user: userEmail,
+      userName: userName,
+      action: isReply ? 'Reply Deleted' : 'Comment Deleted',
+      fieldName: 'Comments',
+      oldValue: displaySnippet,
+      newValue: '',
+      timestamp: new Date().toISOString()
+    });
   }
 
-  async updateComment(id: string, content: string): Promise<void> {
-    const commentDoc = doc(db, 'comments', id);
-    await updateDoc(commentDoc, { content, edited: true });
+  async updateComment(
+    id: string,
+    content: string,
+    userEmail: string,
+    userName: string,
+    taskId: string,
+    isReply: boolean = false,
+    taskSeqId?: string,
+    taskTitle?: string
+  ): Promise<void> {
+    const commentDoc = doc(commentsCollection, id);
+    await updateDoc(commentDoc, {
+      content,
+      edited: true,
+      editedAt: new Date().toISOString()
+    });
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('comments-updated'));
     }
+
+    const snippet = content.replace(/@\[([^\]]+)\]\(([^)]+)\)/g, '@$1');
+    const displaySnippet = snippet.length > 35 ? snippet.substring(0, 35) + '...' : snippet;
+
+    await this.logActivity({
+      taskId,
+      taskSeqId: taskSeqId || 'TASK-ID',
+      taskTitle: taskTitle || 'Task',
+      user: userEmail,
+      userName: userName,
+      action: isReply ? 'Reply Edited' : 'Comment Edited',
+      fieldName: 'Comments',
+      oldValue: '',
+      newValue: displaySnippet,
+      timestamp: new Date().toISOString()
+    });
   }
 
   // --- NOTIFICATIONS HUB HANDLERS ---
@@ -1470,7 +1827,259 @@ class DBService {
     }
   }
 
+  // --- NOTIFICATION PREFERENCES (Batch 4) ---
+  async getUserNotificationPreferences(userEmailOrUid: string): Promise<NotificationPreferences> {
+    const cacheKey = (userEmailOrUid || '').toLowerCase().trim();
+    if (!cacheKey) return { ...DEFAULT_NOTIFICATION_PREFERENCES };
+
+    const cached = this.prefCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 60000) {
+      return cached.prefs;
+    }
+
+    try {
+      const q = query(usersCollection, where('email', '==', cacheKey));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const data = snap.docs[0].data() as User;
+        const prefs: NotificationPreferences = {
+          ...DEFAULT_NOTIFICATION_PREFERENCES,
+          ...(data.notificationPreferences || {})
+        };
+        this.prefCache.set(cacheKey, { prefs, timestamp: Date.now() });
+        return prefs;
+      }
+
+      // Fallback by doc UID
+      const docRef = doc(usersCollection, userEmailOrUid);
+      const userSnap = await getDoc(docRef);
+      if (userSnap.exists()) {
+        const data = userSnap.data() as User;
+        const prefs: NotificationPreferences = {
+          ...DEFAULT_NOTIFICATION_PREFERENCES,
+          ...(data.notificationPreferences || {})
+        };
+        this.prefCache.set(cacheKey, { prefs, timestamp: Date.now() });
+        return prefs;
+      }
+    } catch (err) {
+      console.error('[dbService] Failed to load notification preferences:', err);
+    }
+
+    return { ...DEFAULT_NOTIFICATION_PREFERENCES };
+  }
+
+  async saveUserNotificationPreferences(userEmailOrUid: string, preferences: NotificationPreferences): Promise<void> {
+    const cacheKey = (userEmailOrUid || '').toLowerCase().trim();
+    this.prefCache.set(cacheKey, { prefs: preferences, timestamp: Date.now() });
+
+    try {
+      const q = query(usersCollection, where('email', '==', cacheKey));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        await updateDoc(doc(usersCollection, snap.docs[0].id), {
+          notificationPreferences: preferences,
+          updatedAt: new Date().toISOString()
+        });
+      } else {
+        await setDoc(doc(usersCollection, userEmailOrUid), {
+          notificationPreferences: preferences,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
+    } catch (err) {
+      console.error('[dbService] Failed to save notification preferences:', err);
+      throw err;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('notification-preferences-updated', { detail: preferences }));
+    }
+  }
+
+  // --- TASK WATCHERS (Batch 4) ---
+  async watchTask(taskId: string, user: { email: string; name?: string; avatarColor?: string; uid?: string }): Promise<void> {
+    const userEmail = (user.email || '').toLowerCase().trim();
+    if (!userEmail) throw new Error('Valid user email is required to watch a task.');
+
+    const taskDoc = doc(db, 'tasks', taskId);
+    const snap = await getDoc(taskDoc);
+    if (!snap.exists()) throw new Error('Task not found.');
+
+    const task = { id: snap.id, ...snap.data() } as Task;
+    const existingWatchers = task.watchers || [];
+    const existingIds = (task.watcherIds || existingWatchers.map(w => (w.email || w.id || '').toLowerCase()));
+
+    // Prevent duplicate watcher entries
+    if (existingIds.includes(userEmail)) {
+      return;
+    }
+
+    const newWatcher: TaskWatcher = {
+      id: userEmail,
+      email: userEmail,
+      name: user.name || userEmail.split('@')[0],
+      avatarColor: user.avatarColor || '#3b82f6',
+      watchedAt: new Date().toISOString()
+    };
+
+    const updatedWatchers = [...existingWatchers, newWatcher];
+    const updatedWatcherIds = [...new Set([...existingIds, userEmail])];
+
+    await updateDoc(taskDoc, {
+      watchers: updatedWatchers,
+      watcherIds: updatedWatcherIds,
+      updatedDate: new Date().toISOString()
+    });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('task-updated'));
+    }
+
+    await this.logActivity({
+      taskId,
+      taskSeqId: task.taskId,
+      taskTitle: task.title,
+      user: userEmail,
+      userName: user.name || userEmail.split('@')[0],
+      action: 'Started Watching Task',
+      fieldName: 'Watchers',
+      oldValue: '',
+      newValue: `${user.name || userEmail} started watching`,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  async unwatchTask(taskId: string, userEmail: string, userName?: string): Promise<void> {
+    const email = (userEmail || '').toLowerCase().trim();
+    if (!email) return;
+
+    const taskDoc = doc(db, 'tasks', taskId);
+    const snap = await getDoc(taskDoc);
+    if (!snap.exists()) return;
+
+    const task = { id: snap.id, ...snap.data() } as Task;
+    const existingWatchers = task.watchers || [];
+    const existingIds = (task.watcherIds || existingWatchers.map(w => (w.email || w.id || '').toLowerCase()));
+
+    if (!existingIds.includes(email)) {
+      return;
+    }
+
+    const updatedWatchers = existingWatchers.filter(w => (w.email || w.id || '').toLowerCase() !== email);
+    const updatedWatcherIds = existingIds.filter(id => id.toLowerCase() !== email);
+
+    await updateDoc(taskDoc, {
+      watchers: updatedWatchers,
+      watcherIds: updatedWatcherIds,
+      updatedDate: new Date().toISOString()
+    });
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('task-updated'));
+    }
+
+    await this.logActivity({
+      taskId,
+      taskSeqId: task.taskId,
+      taskTitle: task.title,
+      user: email,
+      userName: userName || email.split('@')[0],
+      action: 'Stopped Watching Task',
+      fieldName: 'Watchers',
+      oldValue: `${userName || email} was watching`,
+      newValue: 'Stopped watching',
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  async notifyTaskWatchers(
+    task: Task,
+    event: {
+      title: string;
+      message: string;
+      type: string;
+      senderEmail?: string;
+      senderName?: string;
+      commentId?: string;
+      excludeEmails: string[];
+    }
+  ): Promise<void> {
+    const watcherEmails = (task.watchers || []).map(w => (w.email || w.id || '').toLowerCase().trim());
+    if (watcherEmails.length === 0) return;
+
+    const normalizedExcludes = new Set(event.excludeEmails.map(e => (e || '').toLowerCase().trim()));
+
+    for (const watcherEmail of watcherEmails) {
+      if (!watcherEmail || normalizedExcludes.has(watcherEmail)) {
+        continue; // Exclude actor and already notified users (prevents duplicates)
+      }
+
+      await this.addNotification({
+        userId: watcherEmail,
+        title: event.title,
+        message: event.message,
+        taskId: task.id || '',
+        commentId: event.commentId,
+        senderEmail: event.senderEmail,
+        senderName: event.senderName,
+        type: event.type,
+        isWatcherNotification: true,
+        read: false,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
   async addNotification(notification: Omit<NotificationItem, 'id' | 'notificationId'>): Promise<void> {
+    // Check User Notification Preferences before creating notification
+    let category: keyof NotificationPreferences | 'system' = 'system';
+    if (notification.isWatcherNotification) {
+      category = 'watcherUpdates';
+    } else {
+      switch (notification.type) {
+        case 'assignment':
+        case 'reassignment':
+        case 'co-assignee-added':
+          category = 'assignments';
+          break;
+        case 'status-change':
+          category = 'statusChanges';
+          break;
+        case 'uat-rejected':
+          category = 'uatRejections';
+          break;
+        case 'priority-change':
+        case 'due-date':
+        case 'task-update':
+          category = 'taskUpdates';
+          break;
+        case 'comment-added':
+          category = 'comments';
+          break;
+        case 'reply-added':
+          category = 'replies';
+          break;
+        case 'mention':
+          category = 'mentions';
+          break;
+        case 'watcher-update':
+        case 'watcher':
+          category = 'watcherUpdates';
+          break;
+        default:
+          category = 'system';
+      }
+    }
+
+    if (category !== 'system') {
+      const userPrefs = await this.getUserNotificationPreferences(notification.userId);
+      if (userPrefs && userPrefs[category] === false) {
+        console.log(`[dbService] Notification for ${notification.userId} skipped due to preference '${category}: false'`);
+        return;
+      }
+    }
+
     const notId = `not-${Date.now()}`;
     const fullNotification: NotificationItem = {
       ...notification,
@@ -1478,6 +2087,7 @@ class DBService {
       notificationId: notId,
       read: notification.read !== undefined ? notification.read : false,
       isRead: notification.read !== undefined ? notification.read : false,
+      isWatcherNotification: notification.isWatcherNotification || false,
       timestamp: notification.timestamp || new Date().toISOString(),
       createdDate: notification.createdDate || notification.timestamp || new Date().toISOString()
     };
@@ -1488,7 +2098,11 @@ class DBService {
       title: fullNotification.title,
       message: fullNotification.message,
       taskId: fullNotification.taskId,
+      commentId: fullNotification.commentId || null,
+      senderEmail: fullNotification.senderEmail || null,
+      senderName: fullNotification.senderName || null,
       type: fullNotification.type,
+      isWatcherNotification: fullNotification.isWatcherNotification || false,
       read: fullNotification.read,
       isRead: fullNotification.isRead,
       timestamp: fullNotification.timestamp,
@@ -1506,7 +2120,7 @@ class DBService {
 
   async markNotificationRead(id: string): Promise<void> {
     const start = performance.now();
-    const notDoc = doc(db, 'notifications', id);
+    const notDoc = doc(notificationsCollection, id);
     await updateDoc(notDoc, { read: true, isRead: true });
     const end = performance.now();
     console.log(`[dbService] [Firestore] Collection Name: notifications, Operation: UPDATE (mark read), Execution Time: ${(end - start).toFixed(2)}ms`);
@@ -1518,7 +2132,7 @@ class DBService {
 
   async deleteNotification(id: string): Promise<void> {
     const start = performance.now();
-    const notDoc = doc(db, 'notifications', id);
+    const notDoc = doc(notificationsCollection, id);
     await deleteDoc(notDoc);
     const end = performance.now();
     console.log(`[dbService] [Firestore] Collection Name: notifications, Operation: DELETE, Execution Time: ${(end - start).toFixed(2)}ms`);
@@ -1535,8 +2149,10 @@ class DBService {
       ...activity,
       id: actId,
       activityId: actId,
+      fieldName: activity.fieldName || '',
       previousValue: activity.previousValue || activity.oldValue || '',
       oldValue: activity.oldValue || activity.previousValue || '',
+      newValue: activity.newValue || '',
       performedBy: activity.performedBy || activity.userName || 'Team Member',
       userName: activity.userName || activity.performedBy || 'Team Member',
       performedByEmail: activity.performedByEmail || activity.user || '',
@@ -1550,8 +2166,10 @@ class DBService {
         taskSeqId: fullActivity.taskSeqId || '',
         taskTitle: fullActivity.taskTitle,
         action: fullActivity.action,
+        fieldName: fullActivity.fieldName || '',
         previousValue: fullActivity.previousValue,
         oldValue: fullActivity.oldValue,
+        newValue: fullActivity.newValue || '',
         performedBy: fullActivity.performedBy,
         userName: fullActivity.userName,
         performedByEmail: fullActivity.performedByEmail,

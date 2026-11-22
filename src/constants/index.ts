@@ -1,6 +1,50 @@
-import { TaskPriority, TaskStatus, UserRole } from '../types';
+import { TaskPriority, TaskStatus, UserRole, IssueType } from '../types';
 
 export const WORKING_HOURS_PER_DAY = 9;
+
+export const ISSUE_TYPES: { value: IssueType; label: string; icon: string; color: string }[] = [
+  { value: 'Task', label: 'Task', icon: 'CheckSquare', color: '#3b82f6' },
+  { value: 'Bug', label: 'Bug', icon: 'Bug', color: '#ef4444' },
+  { value: 'Story', label: 'Story', icon: 'Bookmark', color: '#10b981' },
+  { value: 'Epic', label: 'Epic', icon: 'Layers', color: '#8b5cf6' },
+];
+
+export const ISSUE_TYPE_CONFIG: Record<IssueType, {
+  label: string;
+  color: string;
+  badgeBg: string;
+  badgeColor: string;
+  badgeBorder: string;
+}> = {
+  'Task': {
+    label: 'Task',
+    color: '#3b82f6',
+    badgeBg: 'bg-blue-500/10',
+    badgeColor: 'text-blue-500 dark:text-blue-400',
+    badgeBorder: 'border-blue-500/25'
+  },
+  'Bug': {
+    label: 'Bug',
+    color: '#ef4444',
+    badgeBg: 'bg-red-500/10',
+    badgeColor: 'text-red-500 dark:text-red-400',
+    badgeBorder: 'border-red-500/25'
+  },
+  'Story': {
+    label: 'Story',
+    color: '#10b981',
+    badgeBg: 'bg-emerald-500/10',
+    badgeColor: 'text-emerald-500 dark:text-emerald-400',
+    badgeBorder: 'border-emerald-500/25'
+  },
+  'Epic': {
+    label: 'Epic',
+    color: '#8b5cf6',
+    badgeBg: 'bg-purple-500/10',
+    badgeColor: 'text-purple-500 dark:text-purple-400',
+    badgeBorder: 'border-purple-500/25'
+  }
+};
 
 export const TASK_PRIORITIES: { value: TaskPriority; label: string; color: string }[] = [
   { value: 'low', label: 'Low', color: '#3b82f6' },
