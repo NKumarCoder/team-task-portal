@@ -21,7 +21,8 @@ import {
   AlertTriangle,
   X,
   Check,
-  Trash2
+  Trash2,
+  Eye
 } from 'lucide-react';
 import { cn, formatDate, formatTimeAgo } from '@/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -100,13 +101,13 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
     }
     setShowNotifications(false);
     
-    // Open Task details drawer instantly
+    // Navigate to dedicated task detail page and anchor to comment if present
     try {
       const all = await dbService.getTasks();
       const taskObj = all.find(t => t.id === notif.taskId || t.taskId === notif.taskId);
       if (taskObj) {
-        setSelectedTask(taskObj);
-        setIsTaskDrawerOpen(true);
+        const targetUrl = `/dashboard/tasks/${taskObj.id || taskObj.taskId}${notif.commentId ? `?commentId=${notif.commentId}` : ''}`;
+        router.push(targetUrl);
       } else {
         toast.error("Task not found or deleted");
       }
@@ -116,16 +117,26 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
     }
   };
 
-  const getNotificationIcon = (type: string) => {
+  const getNotificationIcon = (type: string, isWatcher?: boolean) => {
+    if (isWatcher || type === 'watcher-update' || type === 'watcher') {
+      return <Eye className="h-4.5 w-4.5 text-indigo-400 shrink-0" />;
+    }
     switch (type) {
       case 'assignment':
+      case 'reassignment':
+      case 'co-assignee-added':
         return <User className="h-4.5 w-4.5 text-blue-500 shrink-0" />;
       case 'mention':
         return <MessageSquare className="h-4.5 w-4.5 text-purple-500 shrink-0" />;
+      case 'comment-added':
+      case 'reply-added':
+        return <MessageSquare className="h-4.5 w-4.5 text-blue-500 shrink-0" />;
       case 'due-date':
         return <Calendar className="h-4.5 w-4.5 text-orange-500 shrink-0" />;
       case 'completed':
         return <CheckCircle2 className="h-4.5 w-4.5 text-emerald-500 shrink-0" />;
+      case 'uat-rejected':
+        return <AlertTriangle className="h-4.5 w-4.5 text-rose-500 shrink-0" />;
       default:
         return <AlertTriangle className="h-4.5 w-4.5 text-amber-500 shrink-0" />;
     }
@@ -230,7 +241,7 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
                             )}
                           >
                             <div className="flex gap-2.5 items-start">
-                              <div className="mt-0.5 shrink-0">{getNotificationIcon(notif.type)}</div>
+                              <div className="mt-0.5 shrink-0">{getNotificationIcon(notif.type, notif.isWatcherNotification)}</div>
                               <div className="flex-1 min-w-0" onClick={() => handleNotificationClick(notif)}>
                                 <h4 className="text-xs font-bold text-foreground leading-snug cursor-pointer hover:text-primary transition-colors">
                                   {notif.title}

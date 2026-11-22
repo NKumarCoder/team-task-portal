@@ -4,19 +4,20 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
-import { 
-  LayoutDashboard, 
-  CheckSquare, 
+import {
+  LayoutDashboard,
+  CheckSquare,
   ListTodo,
-  FolderKanban, 
-  Users, 
-  BarChart3, 
+  FolderKanban,
+  Users,
+  BarChart3,
   Sparkles,
   Calendar,
   ClipboardList,
   Folder,
   Activity,
-  UserCheck
+  UserCheck,
+  GitCompare
 } from 'lucide-react';
 import { cn } from '@/utils';
 
@@ -50,6 +51,7 @@ export default function Sidebar({ className, onClose }: SidebarProps) {
         items: [
           { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
           { name: 'Projects', href: '/dashboard/projects', icon: Folder },
+          //{ name: 'UI Comparison', href: '/dashboard/ui-comparison', icon: GitCompare },
         ]
       },
       {
@@ -124,8 +126,8 @@ export default function Sidebar({ className, onClose }: SidebarProps) {
                     onClick={onClose}
                     className={cn(
                       "flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all group duration-200 cursor-pointer",
-                      isActive 
-                        ? "bg-primary text-primary-foreground shadow-md shadow-primary/20 font-bold" 
+                      isActive
+                        ? "bg-primary text-primary-foreground shadow-md shadow-primary/20 font-bold"
                         : "text-muted-foreground hover:bg-accent/40 hover:text-foreground"
                     )}
                   >

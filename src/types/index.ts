@@ -1,6 +1,28 @@
 // New simplified role system - only 3 roles
 export type UserRole = 'SuperAdmin' | 'Admin' | 'Member';
 
+export interface NotificationPreferences {
+  assignments: boolean; // 1. Task Assignments / Reassignments
+  statusChanges: boolean; // 2. Task Status Changes
+  taskUpdates: boolean; // 3. Task Updates (Priority, Due Date, Details)
+  comments: boolean; // 4. Comments
+  replies: boolean; // 5. Comment Replies
+  mentions: boolean; // 6. @Mentions
+  uatRejections: boolean; // 7. UAT Rejections
+  watcherUpdates: boolean; // 8. Watcher Notifications
+}
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  assignments: true,
+  statusChanges: true,
+  taskUpdates: true,
+  comments: true,
+  replies: true,
+  mentions: true,
+  uatRejections: true,
+  watcherUpdates: true,
+};
+
 // User document in Firestore (replaces Member)
 export interface User {
   uid: string; // Firebase Auth UID
@@ -9,6 +31,7 @@ export interface User {
   role: UserRole; // SuperAdmin, Admin, or Member
   isActive: boolean;
   avatarColor: string; // e.g. '#3b82f6'
+  notificationPreferences?: NotificationPreferences; // User's custom preferences
   createdAt: string; // ISO String - when user was first created
   createdBy: string; // Email of who created this user
   updatedAt: string; // ISO String - last update timestamp
@@ -51,6 +74,15 @@ export type TaskStatus =
 
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 
+export interface RejectionRecord {
+  id: string; // Unique ID e.g. rej-1725...
+  reason: string;
+  rejectedBy: string; // Email
+  rejectedByName: string; // Display name
+  rejectedAt: string; // ISO date string
+  previousStatus?: TaskStatus | string;
+}
+
 export interface TaskStatusHistory {
   status: TaskStatus;
   previousStatus?: TaskStatus | string;
@@ -69,10 +101,20 @@ export interface Subtask {
   completedDate?: string; // ISO String
 }
 
+export type IssueType = 'Bug' | 'Task' | 'Story' | 'Epic';
+
 export interface TaskAssignee {
   id: string; // Email
   name: string; // Display Name
   color: string; // Avatar Color (e.g. '#6366f1')
+}
+
+export interface TaskWatcher {
+  id: string; // Email or UID
+  name: string; // Display Name
+  email: string; // Email
+  avatarColor?: string;
+  watchedAt: string; // ISO date string
 }
 
 export interface Task {
@@ -81,6 +123,12 @@ export interface Task {
   projectName: string;
   title: string;
   description: string;
+  issueType?: IssueType; // Bug, Task, Story, Epic (defaults to Task)
+  parentTaskId?: string; // Parent Task ID or Sequence ID (e.g. TASK-000001)
+  parentTaskTitle?: string; // Optional cached title of parent task
+  qaOwner?: TaskAssignee; // Dedicated QA Owner
+  qaOwnerId?: string; // QA Owner email for fast lookups
+  qaOwnerName?: string; // QA Owner display name
   assignees?: TaskAssignee[]; // Multi-assignees list (Authoritative)
   assigneeIds?: string[]; // Multi-assignees email list for fast membership checks
   assigneeId?: string; // Legacy fallback single email
@@ -95,6 +143,9 @@ export interface Task {
   labels: string[]; // Multiple tags
   remarks: string;
   latestRejectionReason?: string; // Latest UAT rejection reason if applicable
+  rejectionHistory?: RejectionRecord[]; // Comprehensive history across multiple rejections
+  watchers?: TaskWatcher[]; // List of task followers/watchers (Batch 4)
+  watcherIds?: string[]; // Watcher emails list for fast membership checks (Batch 4)
   attachments?: Attachment[]; // File attachments
   subtasks?: Subtask[]; // Checklist items
   dependencies?: string[]; // Array of prerequisite Task IDs (e.g. ['TASK-000001'])
@@ -119,15 +170,25 @@ export interface Attachment {
   isMock?: boolean;
 }
 
+export interface MentionData {
+  userId: string; // member email or UID
+  userName: string; // member display name
+}
+
 export interface Comment {
   id?: string;
   taskId: string;
-  userId: string; // email
+  userId: string; // email or UID
   userName: string;
-  userAvatarColor: string;
+  userAvatarColor?: string;
   content: string;
+  mentions?: MentionData[];
+  parentId?: string | null; // null/undefined for top-level comments, parent comment ID for replies
+  replyCount?: number; // count of replies for parent comment
+  isDeleted?: boolean; // soft-delete indicator so threaded replies remain accessible
   timestamp: string; // ISO String
   edited?: boolean;
+  editedAt?: string;
 }
 
 export interface ActivityLog {
@@ -139,6 +200,7 @@ export interface ActivityLog {
   user: string; // email (backward compatibility)
   userName: string; // backward compatibility
   action: string; // e.g. 'Task Created'
+  fieldName?: string; // Field-level audit: e.g. 'Status', 'Priority', 'Assignees', 'QA Owner', 'Due Date', 'Title', 'Description', 'Remarks', 'Issue Type', 'Parent Task', 'Subtask'
   oldValue: string; // backward compatibility
   newValue: string; // backward compatibility
   previousValue?: string; // Align with request
@@ -150,13 +212,17 @@ export interface ActivityLog {
 export interface NotificationItem {
   id?: string;
   notificationId?: string; // Align with request
-  userId: string; // email
+  userId: string; // recipient email or UID
   title: string;
   message: string;
   taskId: string; // related task ID
-  type: 'assignment' | 'mention' | 'status-change' | 'due-date' | 'completed' | string;
+  commentId?: string; // related comment ID for deep linking
+  senderEmail?: string;
+  senderName?: string;
+  type: 'assignment' | 'mention' | 'status-change' | 'due-date' | 'completed' | 'comment-added' | 'reply-added' | string;
   read: boolean; // backward compatibility
   isRead?: boolean; // Align with request
+  isWatcherNotification?: boolean; // Indicates if notification was sent due to watching task (Batch 4)
   timestamp: string; // backward compatibility (ISO string)
   createdDate?: string; // Align with request
 }
@@ -188,6 +254,7 @@ export interface UserSession {
   displayName: string;
   role: UserRole;
   avatarColor: string;
+  notificationPreferences?: NotificationPreferences;
 }
 
 export interface Project {

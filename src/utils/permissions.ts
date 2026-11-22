@@ -3,7 +3,7 @@
  * Three roles: SuperAdmin, Admin, Member
  */
 
-import { UserRole, Task } from '../types';
+import { UserRole, Task, TaskStatus } from '../types';
 import { isUserAssignedToTask } from './index';
 
 export interface Permissions {
@@ -183,4 +183,130 @@ export function canAddCoAssignee(
   }
 
   return false;
+}
+
+export interface StatusPermissionCheck {
+  allowed: boolean;
+  reason?: string;
+}
+
+/**
+ * Check if the given user is the designated QA Owner of the task
+ */
+export function isTaskQaOwner(
+  task: Task | null | undefined,
+  userEmail: string | null | undefined
+): boolean {
+  if (!task || !userEmail) return false;
+  const email = userEmail.toLowerCase().trim();
+  if (task.qaOwnerId && task.qaOwnerId.toLowerCase().trim() === email) return true;
+  if (task.qaOwner?.id && task.qaOwner.id.toLowerCase().trim() === email) return true;
+  return false;
+}
+
+/**
+ * Return list of allowed target statuses for the current user and task
+ */
+export function getAllowedStatusTransitions(
+  task: Task | null | undefined,
+  user: { email?: string | null; role?: UserRole } | null | undefined
+): TaskStatus[] {
+  if (!task || !user || !user.email) return [];
+
+  // SuperAdmin and Admin have unrestricted access across all 10 stages
+  if (user.role === 'SuperAdmin' || user.role === 'Admin') {
+    return [
+      'assigned',
+      'in-progress',
+      'supplier-pending',
+      'code-review',
+      'uat-deployed',
+      'uat-testing',
+      'uat-rejected',
+      'ready-for-production-deploy',
+      'prod-deployed',
+      'completed'
+    ];
+  }
+
+  const userEmail = user.email.toLowerCase().trim();
+  const isAssignee = isUserAssignedToTask(task, userEmail);
+  const isQa = isTaskQaOwner(task, userEmail);
+
+  const allowed = new Set<TaskStatus>();
+
+  // Assigned Developers: Development workflow stages
+  if (isAssignee) {
+    allowed.add('assigned');
+    allowed.add('in-progress');
+    allowed.add('supplier-pending');
+    allowed.add('code-review');
+  }
+
+  // QA Owner: Verification and Testing stages
+  if (isQa) {
+    allowed.add('uat-testing');
+    allowed.add('uat-rejected');
+    allowed.add('ready-for-production-deploy');
+    allowed.add('code-review');
+    allowed.add('in-progress');
+  }
+
+  return Array.from(allowed);
+}
+
+/**
+ * Validate whether a status transition is permitted
+ */
+export function canTransitionToStatus(
+  task: Task | null | undefined,
+  targetStatus: TaskStatus,
+  user: { email?: string | null; role?: UserRole } | null | undefined
+): StatusPermissionCheck {
+  if (!task) {
+    return { allowed: false, reason: 'Task does not exist.' };
+  }
+  if (!user || !user.email) {
+    return { allowed: false, reason: 'You must be authenticated to update task status.' };
+  }
+
+  // SuperAdmin and Admin can transition to any status
+  if (user.role === 'SuperAdmin' || user.role === 'Admin') {
+    return { allowed: true };
+  }
+
+  const allowedStatuses = getAllowedStatusTransitions(task, user);
+  if (allowedStatuses.includes(targetStatus)) {
+    return { allowed: true };
+  }
+
+  const userEmail = user.email.toLowerCase().trim();
+  const isAssignee = isUserAssignedToTask(task, userEmail);
+  const isQa = isTaskQaOwner(task, userEmail);
+
+  if (!isAssignee && !isQa) {
+    return {
+      allowed: false,
+      reason: 'Only assigned developers, QA owner, or administrators can update the status of this task.'
+    };
+  }
+
+  if (targetStatus === 'uat-deployed' || targetStatus === 'prod-deployed' || targetStatus === 'completed') {
+    return {
+      allowed: false,
+      reason: 'Deploying and completing tasks is restricted to Administrators.'
+    };
+  }
+
+  if (targetStatus === 'uat-rejected' || targetStatus === 'uat-testing' || targetStatus === 'ready-for-production-deploy') {
+    return {
+      allowed: false,
+      reason: 'UAT status transitions are reserved for the designated QA Owner or Administrators.'
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: `You do not have permission to transition this task to "${targetStatus}".`
+  };
 }

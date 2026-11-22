@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
 import { authService } from '@/services/authService';
@@ -18,7 +19,9 @@ import {
   Palette, 
   Save, 
   KeyRound,
-  History
+  History,
+  Bell,
+  ChevronRight
 } from 'lucide-react';
 import { formatDate, isUserAssignedToTask } from '@/utils';
 import toast from 'react-hot-toast';
@@ -365,6 +368,28 @@ export default function ProfilePage() {
           </form>
         </div>
 
+      </div>
+
+      {/* Notification Preferences Quick Access (Batch 4) */}
+      <div className="glass-panel p-5.5 rounded-3xl border border-card-border flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-2xl bg-primary/10 text-primary">
+            <Bell className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-foreground">Notification Preferences</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Control which task events, discussions, mentions, and watcher updates notify you.
+            </p>
+          </div>
+        </div>
+        <Link
+          href="/dashboard/settings"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-all cursor-pointer shadow-sm shadow-primary/20"
+        >
+          <span>Configure Preferences</span>
+          <ChevronRight className="h-4 w-4" />
+        </Link>
       </div>
 
       {/* User recent Activity log stream */}
