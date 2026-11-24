@@ -41,10 +41,12 @@ export default function CreateReleaseDialog({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Initialize today's date in YYYY-MM-DD
   useEffect(() => {
     if (isOpen) {
+      setErrorMessage(null);
       const today = new Date();
       const yyyy = today.getFullYear();
       const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -116,21 +118,28 @@ export default function CreateReleaseDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    setErrorMessage(null);
 
     const cleanName = releaseName.trim();
     if (!cleanName) {
-      toast.error('Please enter a Release Name');
+      const msg = 'Please enter a Release Name';
+      setErrorMessage(msg);
+      toast.error(msg);
       return;
     }
 
     if (!releaseDate) {
-      toast.error('Please choose a Production Release Date');
+      const msg = 'Please choose a Production Release Date';
+      setErrorMessage(msg);
+      toast.error(msg);
       return;
     }
 
     const idsArray = Array.from(selectedIds);
     if (idsArray.length === 0) {
-      toast.error('Please select at least one project change entry to include');
+      const msg = 'Please select at least one project change entry to include';
+      setErrorMessage(msg);
+      toast.error(msg);
       return;
     }
 
@@ -149,7 +158,9 @@ export default function CreateReleaseDialog({
       onClose();
     } catch (err: any) {
       console.error('Failed to create release:', err);
-      toast.error(err?.message || 'Failed to create production release');
+      const errMsg = err?.message || 'Failed to create production release';
+      setErrorMessage(errMsg);
+      toast.error(errMsg);
     } finally {
       setSubmitting(false);
     }
@@ -194,6 +205,17 @@ export default function CreateReleaseDialog({
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[calc(88vh-8rem)] overflow-y-auto custom-scrollbar">
+            {/* Error Banner */}
+            {errorMessage && (
+              <div className="p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 flex items-start gap-2.5 text-destructive text-xs">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-bold">Cannot Create Production Release</p>
+                  <p className="text-[11px] text-foreground font-medium leading-relaxed">{errorMessage}</p>
+                </div>
+              </div>
+            )}
+
             {/* 1. Release Name */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-foreground flex items-center gap-1.5">

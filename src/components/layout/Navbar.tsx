@@ -524,7 +524,7 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
 
       {/* Second row – Horizontal Navigation (Desktop & Tablet) - Visible only when Top Navigation is active */}
       {layoutMode === 'top' && (
-        <div className="hidden md:flex items-center px-4 lg:px-8 h-11 border-t border-card-border/50 bg-card/35 backdrop-blur-md overflow-visible">
+        <div className="hidden md:flex items-center px-4 lg:px-8 h-11 border-t border-card-border/50 bg-card/40 overflow-visible">
           <HorizontalNav />
         </div>
       )}

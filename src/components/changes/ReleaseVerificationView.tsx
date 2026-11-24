@@ -18,7 +18,9 @@ import {
   Send,
   Layers,
   Check,
-  X
+  X,
+  ExternalLink,
+  Tag
 } from 'lucide-react';
 import { ProductionRelease, ReleaseChangeItem, getReleaseItemPoints } from '@/types';
 import { dbService } from '@/services/dbService';
@@ -370,13 +372,63 @@ export default function ReleaseVerificationView({
                               }`}>
                                 {vIdx + 1}
                               </span>
-                              <div className="min-w-0 flex-1">
-                                <span className="text-xs text-foreground font-medium leading-relaxed">
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {vItem.taskId ? (
+                                    <>
+                                      <span className="font-mono font-bold text-[11px] text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded">
+                                        {vItem.taskId}
+                                      </span>
+                                      {vItem.taskModule && (
+                                        <span className="text-[10px] font-medium text-muted-foreground bg-accent/40 px-1.5 py-0.5 rounded border border-card-border/60">
+                                          {vItem.taskModule}
+                                        </span>
+                                      )}
+                                      {vItem.taskDocId && (
+                                        <a
+                                          href={`/dashboard/tasks/${vItem.taskDocId}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[10px] font-semibold text-primary hover:underline inline-flex items-center gap-0.5"
+                                          title="View original task in All Tasks"
+                                        >
+                                          <span>View Task</span>
+                                          <ExternalLink className="h-2.5 w-2.5" />
+                                        </a>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span className="text-[10px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/25 px-1.5 py-0.5 rounded">
+                                      Manual Point
+                                    </span>
+                                  )}
+
+                                  {vItem.developerCompleted && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-500 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded">
+                                      <CheckCircle2 className="h-2.5 w-2.5" />
+                                      <span>Developer Verified</span>
+                                    </span>
+                                  )}
+                                </div>
+
+                                <p className="text-xs text-foreground font-medium leading-relaxed">
                                   {vItem.text}
-                                </span>
+                                </p>
+
+                                {/* Developer Comment if provided */}
+                                {vItem.developerComment && (
+                                  <div className="p-2 rounded-lg bg-card/60 border border-card-border/80 text-[11px] text-foreground/90 flex items-start gap-1.5 mt-1">
+                                    <MessageSquare className="h-3 w-3 text-primary shrink-0 mt-0.5" />
+                                    <div>
+                                      <span className="font-bold text-muted-foreground text-[10px] block uppercase">Developer Comment:</span>
+                                      <span>{vItem.developerComment}</span>
+                                    </div>
+                                  </div>
+                                )}
+
                                 {vItem.qaUserName && vItem.status !== 'Pending' && (
                                   <p className="text-[10px] text-muted-foreground mt-0.5">
-                                    Verified by {vItem.qaUserName} {vItem.qaDate ? `(${formatDate(vItem.qaDate)})` : ''}
+                                    QA Verified by {vItem.qaUserName} {vItem.qaDate ? `(${formatDate(vItem.qaDate)})` : ''}
                                   </p>
                                 )}
                               </div>
