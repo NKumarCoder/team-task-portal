@@ -97,7 +97,7 @@ export default function DashboardLayout({
       <Sidebar className="hidden lg:flex fixed left-0 top-0 bottom-0 z-20" />
 
       {/* Main Panel wrapper */}
-      <div className="flex-1 flex flex-col lg:pl-64 min-h-screen relative z-10 min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col lg:pl-64 min-h-screen relative z-10 min-w-0">
         <Navbar onMenuClick={() => setMobileOpen(true)} />
         
         {/* Main Content Area */}

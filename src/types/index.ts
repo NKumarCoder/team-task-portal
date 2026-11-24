@@ -173,6 +173,8 @@ export interface Attachment {
 export interface MentionData {
   userId: string; // member email or UID
   userName: string; // member display name
+  userEmail?: string;
+  uid?: string;
 }
 
 export interface Comment {
@@ -189,6 +191,7 @@ export interface Comment {
   timestamp: string; // ISO String
   edited?: boolean;
   editedAt?: string;
+  autoAssignedMembers?: Member[];
 }
 
 export interface ActivityLog {

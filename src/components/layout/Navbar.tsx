@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTheme } from 'next-themes';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
@@ -22,7 +23,8 @@ import {
   X,
   Check,
   Trash2,
-  Eye
+  Eye,
+  Loader2
 } from 'lucide-react';
 import { cn, formatDate, formatTimeAgo } from '@/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,19 +45,84 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [isDeleteAllConfirmOpen, setIsDeleteAllConfirmOpen] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  // References for outside click detection
+  const notificationRef = useRef<HTMLDivElement>(null);
+  const profileRef = useRef<HTMLDivElement>(null);
 
   // Task Details Drawer States
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskDrawerOpen, setIsTaskDrawerOpen] = useState(false);
 
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Handle click outside to close dropdowns without conflicting backdrops
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      // While Delete All confirmation is open, let the confirmation modal handle clicks
+      if (isDeleteAllConfirmOpen) return;
+
+      const target = event.target as Node;
+      if (notificationRef.current && !notificationRef.current.contains(target)) {
+        setShowNotifications(false);
+      }
+      if (profileRef.current && !profileRef.current.contains(target)) {
+        setShowProfileMenu(false);
+      }
+    };
+
+    if (showNotifications || showProfileMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showNotifications, showProfileMenu, isDeleteAllConfirmOpen]);
+
+  // Handle Escape key to close open dialogs or dropdowns
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isDeleteAllConfirmOpen) {
+          if (!isDeletingAll) setIsDeleteAllConfirmOpen(false);
+        } else if (showNotifications) {
+          setShowNotifications(false);
+        } else if (showProfileMenu) {
+          setShowProfileMenu(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDeleteAllConfirmOpen, isDeletingAll, showNotifications, showProfileMenu]);
+
+  // Lock body scroll when Delete All confirmation modal is open
+  useEffect(() => {
+    if (isDeleteAllConfirmOpen) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [isDeleteAllConfirmOpen]);
+
   // Subscribe to real-time notifications for the active user
   useEffect(() => {
-    if (!user) return;
-    const unsubscribe = dbService.subscribeNotifications(user.email, (fetched) => {
+    if (!user?.email) return;
+    const cleanEmail = user.email.toLowerCase().trim();
+    const unsubscribe = dbService.subscribeNotifications(cleanEmail, (fetched) => {
       setNotifications(fetched);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user?.email]);
 
   const unreadCount = useMemo(() => {
     return notifications.filter(n => !n.read && !n.isRead).length;
@@ -87,11 +154,33 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
   };
 
   const handleDeleteNotification = async (id: string) => {
+    if (!id || deletingId) return;
+    setDeletingId(id);
     try {
       await dbService.deleteNotification(id);
+      setNotifications(prev => prev.filter(n => n.id !== id && n.notificationId !== id));
       toast.success('Notification deleted');
     } catch (err) {
+      console.error('Failed to delete notification:', err);
       toast.error('Failed to delete notification');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleDeleteAllNotifications = async () => {
+    if (!user?.email || isDeletingAll) return;
+    setIsDeletingAll(true);
+    try {
+      const res = await dbService.deleteAllNotifications(user.email);
+      setNotifications([]);
+      setIsDeleteAllConfirmOpen(false);
+      toast.success(res.deletedCount > 0 ? `Deleted ${res.deletedCount} notification(s)` : 'All notifications cleared');
+    } catch (err: any) {
+      console.error('Failed to delete all notifications:', err);
+      toast.error(err?.message || 'Failed to delete all notifications');
+    } finally {
+      setIsDeletingAll(false);
     }
   };
 
@@ -144,7 +233,7 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
 
   return (
     <>
-    <header className="sticky top-0 z-30 w-full glass-panel border-b border-card-border backdrop-blur-md flex items-center justify-between px-4 py-3 h-16 select-none">
+    <header className="sticky top-0 z-40 w-full glass-panel border-b border-card-border backdrop-blur-md flex items-center justify-between px-4 py-3 h-16 select-none">
       {/* Left: Mobile Menu Trigger + brand title */}
       <div className="flex items-center gap-4 flex-1">
         <button 
@@ -168,130 +257,162 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
         </button>
 
         {/* Notifications Center */}
-        <div className="relative">
+        <div className="relative" ref={notificationRef}>
           <button
+            type="button"
             onClick={() => {
               setShowNotifications(!showNotifications);
               setShowProfileMenu(false);
             }}
             className="relative p-2.5 rounded-xl hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-all cursor-pointer border border-transparent hover:border-card-border"
+            aria-label="Notifications"
           >
             <Bell className="h-5 w-5" />
             {unreadCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-destructive text-destructive-foreground text-[8px] font-black rounded-full flex items-center justify-center border border-background">
-                {unreadCount}
+              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-destructive text-destructive-foreground text-[8px] font-black rounded-full flex items-center justify-center border border-background shadow-xs">
+                {unreadCount > 99 ? '99+' : unreadCount}
               </span>
             )}
           </button>
 
           <AnimatePresence>
             {showNotifications && (
-              <div className="fixed inset-0 z-50 overflow-hidden select-none">
-                {/* Backdrop */}
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 0.4 }}
-                  exit={{ opacity: 0 }}
-                  onClick={() => setShowNotifications(false)}
-                  className="fixed inset-0 bg-black"
-                />
-
-                {/* Sliding Drawer */}
-                <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
-                  <motion.div
-                    initial={{ x: '100%' }}
-                    animate={{ x: 0 }}
-                    exit={{ x: '100%' }}
-                    transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                    className="w-screen max-w-sm glass-panel bg-card/95 border-l border-card-border p-5 shadow-2xl flex flex-col h-full overflow-hidden text-left"
-                  >
-                    {/* Header */}
-                    <div className="flex justify-between items-center pb-4 border-b border-card-border mb-4 shrink-0">
-                      <h2 className="text-sm font-bold tracking-tight text-foreground flex items-center gap-2">
-                        <Bell className="h-4.5 w-4.5 text-primary" />
-                        Notifications ({unreadCount})
-                      </h2>
-                      <div className="flex items-center gap-2.5">
-                        {unreadCount > 0 && (
-                          <button 
-                            onClick={handleMarkAllRead}
-                            className="text-[10px] text-primary font-bold hover:underline cursor-pointer"
-                          >
-                            Mark All Read
-                          </button>
-                        )}
-                        <button 
-                          onClick={() => setShowNotifications(false)}
-                          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Scrollable list */}
-                    <div className="flex-1 overflow-y-auto pr-1 space-y-3.5">
-                      {notifications.length > 0 ? (
-                        notifications.map((notif, nIdx) => (
-                          <div 
-                            key={notif.id || notif.notificationId || `notif-${nIdx}`}
-                            className={cn(
-                              "p-3 rounded-xl border flex flex-col gap-2 relative transition-all duration-200 hover:bg-accent/10 border-card-border",
-                              !notif.read ? "bg-primary/[0.03] border-primary/20" : "bg-card/40 opacity-75"
-                            )}
-                          >
-                            <div className="flex gap-2.5 items-start">
-                              <div className="mt-0.5 shrink-0">{getNotificationIcon(notif.type, notif.isWatcherNotification)}</div>
-                              <div className="flex-1 min-w-0" onClick={() => handleNotificationClick(notif)}>
-                                <h4 className="text-xs font-bold text-foreground leading-snug cursor-pointer hover:text-primary transition-colors">
-                                  {notif.title}
-                                </h4>
-                                <p className="text-[10px] text-muted-foreground mt-0.5 leading-relaxed cursor-pointer select-text">
-                                  {notif.message}
-                                </p>
-                                <span className="text-[8px] text-muted-foreground/80 font-semibold mt-1 block">
-                                  {formatTimeAgo(notif.timestamp || notif.createdDate || new Date().toISOString())}
-                                </span>
-                              </div>
-
-                              {/* Card action controls (Mark read/delete) */}
-                              <div className="flex items-center gap-1.5 shrink-0 self-start">
-                                {!notif.read && (
-                                  <button
-                                    onClick={() => handleMarkIndividualRead(notif.id!)}
-                                    className="p-1 rounded hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-500 transition-all cursor-pointer"
-                                    title="Mark as Read"
-                                  >
-                                    <Check className="h-3 w-3" />
-                                  </button>
-                                )}
-                                <button
-                                  onClick={() => handleDeleteNotification(notif.id!)}
-                                  className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all cursor-pointer"
-                                  title="Delete Notification"
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="py-20 text-center text-xs text-muted-foreground italic">
-                          No notifications. You are all caught up!
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
+              <motion.div
+                key="navbar-notifications-panel"
+                initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                transition={{ duration: 0.15 }}
+                onClick={(e) => e.stopPropagation()}
+                className={cn(
+                  "absolute right-[-64px] sm:right-0 top-full mt-2 w-[calc(100vw-2rem)] sm:w-96 max-w-[380px] sm:max-w-sm glass-panel bg-card/98 border border-card-border shadow-2xl z-50 flex flex-col overflow-hidden text-left rounded-2xl transition-opacity duration-150",
+                  isDeleteAllConfirmOpen && "opacity-50 pointer-events-none"
+                )}
+                style={{ maxHeight: 'min(500px, calc(100vh - 5rem))' }}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-card-border bg-card/80 shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Bell className="h-4 w-4 text-primary shrink-0" />
+                    <h3 className="text-xs font-bold text-foreground truncate">Notifications</h3>
+                    {unreadCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-extrabold bg-primary/15 text-primary border border-primary/25 leading-none shrink-0">
+                        {unreadCount}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {unreadCount > 0 && (
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMarkAllRead();
+                        }}
+                        className="text-[11px] text-primary font-bold hover:underline cursor-pointer transition-colors"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                    {notifications.length > 0 && (
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsDeleteAllConfirmOpen(true);
+                        }}
+                        className="text-[11px] text-destructive font-bold hover:underline cursor-pointer transition-colors flex items-center gap-1"
+                        title="Delete all notifications"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        <span>Delete all</span>
+                      </button>
+                    )}
+                    <button 
+                      type="button"
+                      onClick={() => setShowNotifications(false)}
+                      className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer ml-0.5"
+                      aria-label="Close"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+
+                {/* Scrollable List */}
+                <div
+                  className="flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar overscroll-contain"
+                  onWheel={(e) => e.stopPropagation()}
+                >
+                  {notifications.length > 0 ? (
+                    notifications.map((notif, nIdx) => (
+                      <div 
+                        key={notif.id || notif.notificationId || `notif-${nIdx}`}
+                        className={cn(
+                          "p-2.5 rounded-xl border flex flex-col gap-1.5 relative transition-all duration-150 hover:bg-accent/20 cursor-pointer select-none",
+                          !notif.read ? "bg-primary/[0.05] border-primary/25" : "bg-card/40 border-card-border/60 opacity-80"
+                        )}
+                        onClick={() => handleNotificationClick(notif)}
+                      >
+                        <div className="flex gap-2.5 items-start">
+                          <div className="mt-0.5 shrink-0">{getNotificationIcon(notif.type, notif.isWatcherNotification)}</div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <h4 className="text-xs font-bold text-foreground leading-snug hover:text-primary transition-colors truncate">
+                                {notif.title}
+                              </h4>
+                              <span className="text-[9px] text-muted-foreground/80 shrink-0 font-medium">
+                                {formatTimeAgo(notif.timestamp || notif.createdDate || new Date().toISOString())}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-0.5 leading-relaxed break-words line-clamp-3">
+                              {notif.message}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0 self-start ml-1" onClick={(e) => e.stopPropagation()}>
+                            {!notif.read && (
+                              <button
+                                type="button"
+                                onClick={() => handleMarkIndividualRead(notif.id!)}
+                                className="p-1 rounded hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-500 transition-all cursor-pointer"
+                                title="Mark as Read"
+                              >
+                                <Check className="h-3 w-3" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={deletingId === notif.id}
+                              onClick={() => handleDeleteNotification(notif.id!)}
+                              className="p-1 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all cursor-pointer disabled:opacity-50"
+                              title="Delete Notification"
+                            >
+                              {deletingId === notif.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin text-destructive" />
+                              ) : (
+                                <Trash2 className="h-3 w-3" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="py-12 px-4 text-center space-y-2">
+                      <Bell className="h-7 w-7 text-muted-foreground/30 mx-auto" />
+                      <p className="text-xs font-semibold text-foreground">No notifications yet</p>
+                      <p className="text-[10px] text-muted-foreground">You are all caught up!</p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
             )}
           </AnimatePresence>
         </div>
 
         {/* Profile Dropdown */}
         {user && (
-          <div className="relative">
+          <div className="relative" ref={profileRef}>
             <button
               onClick={() => {
                 setShowProfileMenu(!showProfileMenu);
@@ -311,7 +432,6 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
             <AnimatePresence>
               {showProfileMenu && (
                 <div key="navbar-profile-menu-container">
-                  <div className="fixed inset-0 z-40" onClick={() => setShowProfileMenu(false)} />
                   <motion.div
                     key="navbar-profile-menu-panel"
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -364,6 +484,79 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
         )}
       </div>
     </header>
+
+    {/* Delete All Confirmation Modal portaled directly to document.body */}
+    {mounted && isDeleteAllConfirmOpen && typeof document !== 'undefined' && createPortal(
+      <AnimatePresence>
+        <div
+          role="presentation"
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-xs select-none animate-in fade-in duration-150"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!isDeletingAll) setIsDeleteAllConfirmOpen(false);
+          }}
+        >
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-all-notifications-dialog-title"
+            initial={{ opacity: 0, scale: 0.95, y: -10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: -10 }}
+            transition={{ duration: 0.15 }}
+            className="w-full max-w-sm sm:max-w-md bg-card border border-card-border rounded-2xl shadow-2xl p-6 text-left space-y-5 relative z-[101]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-destructive/15 border border-destructive/25 flex items-center justify-center text-destructive shrink-0">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 
+                  id="delete-all-notifications-dialog-title" 
+                  className="text-sm sm:text-base font-bold text-foreground"
+                >
+                  Delete all notifications?
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                  This will remove all notifications from your inbox. Your tasks, comments, assignments, and activity history will remain unchanged.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-card-border/60">
+              <button
+                type="button"
+                disabled={isDeletingAll}
+                onClick={() => setIsDeleteAllConfirmOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingAll}
+                onClick={handleDeleteAllNotifications}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-destructive text-destructive-foreground text-xs font-bold hover:bg-destructive/90 transition-all cursor-pointer disabled:opacity-50 shadow-md shadow-destructive/20"
+              >
+                {isDeletingAll ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Delete All</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      </AnimatePresence>,
+      document.body
+    )}
     {selectedTask && (
       <TaskDetailDrawer 
         task={selectedTask} 
