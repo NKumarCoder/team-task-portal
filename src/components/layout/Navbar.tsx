@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import Link from 'next/link';
 import { useTheme } from 'next-themes';
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
@@ -24,7 +25,10 @@ import {
   Check,
   Trash2,
   Eye,
-  Loader2
+  Loader2,
+  Sparkles,
+  PanelLeft,
+  PanelTop
 } from 'lucide-react';
 import { cn, formatDate, formatTimeAgo } from '@/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,6 +36,8 @@ import { dbService } from '@/services/dbService';
 import { NotificationItem, Task } from '@/types';
 import toast from 'react-hot-toast';
 import TaskDetailDrawer from '../tasks/TaskDetailDrawer';
+import HorizontalNav from './HorizontalNav';
+import { useNavigationLayout } from './NavigationLayoutContext';
 
 interface NavbarProps {
   onMenuClick: () => void;
@@ -41,6 +47,7 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
   const { theme, setTheme } = useTheme();
   const { user, logout } = useAuth();
   const router = useRouter();
+  const { layoutMode, toggleLayoutMode } = useNavigationLayout();
   
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -233,28 +240,58 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
 
   return (
     <>
-    <header className="sticky top-0 z-40 w-full glass-panel border-b border-card-border backdrop-blur-md flex items-center justify-between px-4 py-3 h-16 select-none">
-      {/* Left: Mobile Menu Trigger + brand title */}
-      <div className="flex items-center gap-4 flex-1">
-        <button 
-          onClick={onMenuClick}
-          className="lg:hidden p-2 rounded-lg hover:bg-accent/50 text-muted-foreground hover:text-foreground cursor-pointer"
-        >
-          <Menu className="h-5 w-5" />
-        </button>
-      </div>
+    <header className="sticky top-0 z-40 w-full glass-panel border-b border-card-border backdrop-blur-md select-none overflow-visible">
+      {/* First row – Application header */}
+      <div className="flex items-center justify-between px-4 lg:px-8 py-2.5 h-14">
+        {/* Left: Mobile Menu Trigger + Brand Logo */}
+        <div className="flex items-center gap-3 sm:gap-4">
+          <button 
+            type="button"
+            onClick={onMenuClick}
+            className="md:hidden p-2 rounded-lg hover:bg-accent/50 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+            aria-label="Open mobile menu"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
 
-      {/* Right: Actions */}
-      <div className="flex items-center gap-2 sm:gap-3">
-        {/* Dark Mode Toggle */}
-        <button
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="p-2.5 rounded-xl hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-all cursor-pointer border border-transparent hover:border-card-border"
-          aria-label="Toggle Theme"
-        >
-          <Sun className="h-5 w-5 hidden dark:block text-amber-400" />
-          <Moon className="h-5 w-5 dark:hidden text-indigo-600" />
-        </button>
+          <Link href="/dashboard" className="flex items-center gap-2.5 group cursor-pointer select-none">
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground shadow-sm shadow-primary/20 group-hover:scale-105 transition-transform duration-150">
+              <Sparkles className="h-4.5 w-4.5" />
+            </div>
+            <div className="flex flex-col">
+              <span className="font-bold text-sm leading-tight tracking-tight text-foreground group-hover:text-primary transition-colors">Apex Tasks</span>
+              <span className="text-[9px] text-muted-foreground uppercase font-semibold tracking-wider">Enterprise</span>
+            </div>
+          </Link>
+        </div>
+
+        {/* Right: Actions */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5">
+          {/* Navigation Layout Toggle (Top Navigation <-> Left Sidebar) */}
+          <button
+            type="button"
+            onClick={toggleLayoutMode}
+            className="p-2.5 rounded-xl hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-all cursor-pointer border border-transparent hover:border-card-border group"
+            title={layoutMode === 'top' ? "Switch to Left Sidebar" : "Switch to Top Navigation"}
+            aria-label={layoutMode === 'top' ? "Switch to Left Sidebar" : "Switch to Top Navigation"}
+          >
+            {layoutMode === 'top' ? (
+              <PanelLeft className="h-5 w-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+            ) : (
+              <PanelTop className="h-5 w-5 text-primary transition-colors" />
+            )}
+          </button>
+
+          {/* Dark Mode Toggle */}
+          <button
+            type="button"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="p-2.5 rounded-xl hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-all cursor-pointer border border-transparent hover:border-card-border"
+            aria-label="Toggle Theme"
+          >
+            <Sun className="h-5 w-5 hidden dark:block text-amber-400" />
+            <Moon className="h-5 w-5 dark:hidden text-indigo-600" />
+          </button>
 
         {/* Notifications Center */}
         <div className="relative" ref={notificationRef}>
@@ -483,6 +520,14 @@ export default function Navbar({ onMenuClick }: NavbarProps) {
           </div>
         )}
       </div>
+      </div>
+
+      {/* Second row – Horizontal Navigation (Desktop & Tablet) - Visible only when Top Navigation is active */}
+      {layoutMode === 'top' && (
+        <div className="hidden md:flex items-center px-4 lg:px-8 h-11 border-t border-card-border/50 bg-card/35 backdrop-blur-md overflow-visible">
+          <HorizontalNav />
+        </div>
+      )}
     </header>
 
     {/* Delete All Confirmation Modal portaled directly to document.body */}
