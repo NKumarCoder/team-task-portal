@@ -18,10 +18,16 @@ import {
   Plus,
   Check,
   Loader2,
-  Info
+  Info,
+  ExternalLink,
+  MessageSquare,
+  Square,
+  CheckSquare
 } from 'lucide-react';
-import { ProjectChangeChecklist, getChecklistPoints } from '@/types';
+import { ProjectChangeChecklist, ChangeChecklistItem, getChecklistItems, getChecklistPoints } from '@/types';
 import { dbService } from '@/services/dbService';
+import { useAuth } from '@/hooks/useAuth';
+import { TASK_STATUS_CONFIG } from '@/constants';
 import { formatDate } from '@/utils';
 import toast from 'react-hot-toast';
 
@@ -69,7 +75,66 @@ export default function ChangeDetailModal({
   const canDeleteChange = !hasReleaseHistory && checklist.status === 'Available for Release';
   const isEditable = canEdit && (checklist.status === 'Available for Release' || checklist.status === 'Rejected by QA');
 
+  const { user } = useAuth();
+  const items = getChecklistItems(checklist);
   const points = getChecklistPoints(checklist);
+
+  const [editingCommentIndex, setEditingCommentIndex] = useState<number | null>(null);
+  const [editingCommentText, setEditingCommentText] = useState('');
+
+  // Handle direct item completion toggle (Does NOT touch tasks in All Tasks)
+  const handleToggleItemComplete = async (itemId: string) => {
+    if (!checklist.id || !user || !isEditable) return;
+    setPointActionLoading(true);
+    try {
+      const userEmail = user.email.toLowerCase();
+      const userName = user.displayName || user.email.split('@')[0];
+      const updatedItems = await dbService.toggleChecklistItemStatus(checklist.id, itemId, userEmail, userName);
+      const updatedChecklist = { ...checklist, items: updatedItems, points: updatedItems.map(it => it.text) };
+      if (onChecklistUpdated) onChecklistUpdated(updatedChecklist);
+      toast.success('Checklist item status updated');
+    } catch (err: any) {
+      console.error('Failed to toggle item completion:', err);
+      toast.error('Failed to update item completion');
+    } finally {
+      setPointActionLoading(false);
+    }
+  };
+
+  // Handle direct item comment update
+  const handleSaveComment = async (itemId: string, comment: string) => {
+    if (!checklist.id || !isEditable) return;
+    setPointActionLoading(true);
+    try {
+      const updatedItems = await dbService.updateChecklistItemComment(checklist.id, itemId, comment);
+      const updatedChecklist = { ...checklist, items: updatedItems, points: updatedItems.map(it => it.text) };
+      if (onChecklistUpdated) onChecklistUpdated(updatedChecklist);
+      setEditingCommentIndex(null);
+      setEditingCommentText('');
+      toast.success('Comment saved');
+    } catch (err: any) {
+      console.error('Failed to update comment:', err);
+      toast.error('Failed to save comment');
+    } finally {
+      setPointActionLoading(false);
+    }
+  };
+
+  // Task status badge helper
+  const getTaskStatusBadge = (status?: string) => {
+    if (!status) return null;
+    const cfg = TASK_STATUS_CONFIG[status] || {
+      label: status,
+      badgeBg: 'bg-accent/40',
+      badgeColor: 'text-muted-foreground',
+      badgeBorder: 'border-card-border'
+    };
+    return (
+      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${cfg.badgeBg} ${cfg.badgeColor} ${cfg.badgeBorder}`}>
+        {cfg.label}
+      </span>
+    );
+  };
 
   // Handle Adding Point directly
   const handleSaveNewPoint = async () => {
@@ -364,15 +429,21 @@ export default function ChangeDetailModal({
               </div>
 
               {/* Point-wise List with Individual Edit & Delete Controls */}
-              <div className="space-y-2">
-                {points.map((pt, idx) => {
+              <div className="space-y-2.5">
+                {items.map((item, idx) => {
                   const isEditingThis = editingPointIndex === idx;
                   const isConfirmingDelete = confirmDeletePointIndex === idx;
+                  const isEditingComment = editingCommentIndex === idx;
+                  const isCompleted = item.status === 'Completed';
 
                   return (
                     <div 
-                      key={idx} 
-                      className="p-3 rounded-xl bg-accent/20 border border-card-border/60 text-xs flex flex-col gap-2 transition-all"
+                      key={item.id || idx} 
+                      className={`p-3.5 rounded-xl border text-xs flex flex-col gap-2 transition-all ${
+                        isCompleted 
+                          ? 'bg-emerald-500/[0.04] border-emerald-500/25' 
+                          : 'bg-accent/20 border-card-border/60'
+                      }`}
                     >
                       {isEditingThis ? (
                         /* Inline Edit Form */
@@ -389,7 +460,7 @@ export default function ChangeDetailModal({
                               if (e.key === 'Escape') setEditingPointIndex(null);
                             }}
                             autoFocus
-                            className="flex-1 px-3 py-1.5 rounded-lg bg-accent/40 border border-card-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
+                            className="flex-1 px-3 py-1.5 rounded-lg bg-accent/40 border border-card-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-primary/40 font-medium"
                           />
                           <button
                             type="button"
@@ -413,17 +484,153 @@ export default function ChangeDetailModal({
                         /* Standard View Row */
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                            {/* Numbering */}
                             <span className="w-5 h-5 rounded-full bg-primary/15 text-primary font-bold text-[10px] flex items-center justify-center shrink-0 mt-0.5">
                               {idx + 1}
                             </span>
-                            <span className="text-foreground leading-relaxed break-words font-medium">
-                              {pt}
-                            </span>
+
+                            {/* Checkbox to toggle completion */}
+                            <button
+                              type="button"
+                              disabled={!isEditable || pointActionLoading}
+                              onClick={() => handleToggleItemComplete(item.id)}
+                              className={`mt-0.5 transition-colors shrink-0 ${
+                                isEditable ? 'cursor-pointer hover:opacity-80' : 'cursor-default opacity-80'
+                              }`}
+                              title={isCompleted ? "Completed" : "Pending"}
+                            >
+                              {isCompleted ? (
+                                <CheckSquare className="h-4.5 w-4.5 text-emerald-500" />
+                              ) : (
+                                <Square className="h-4.5 w-4.5 text-muted-foreground/60" />
+                              )}
+                            </button>
+
+                            <div className="min-w-0 flex-1 space-y-1">
+                              {/* Metadata chips */}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {item.taskId ? (
+                                  <>
+                                    <span className="font-mono font-bold text-[11px] text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded">
+                                      {item.taskId}
+                                    </span>
+                                    {getTaskStatusBadge(item.taskStatus)}
+                                    {item.taskModule && (
+                                      <span className="text-[10px] font-medium text-muted-foreground bg-accent/40 px-1.5 py-0.5 rounded border border-card-border/60">
+                                        {item.taskModule}
+                                      </span>
+                                    )}
+                                    {item.taskDocId && (
+                                      <a
+                                        href={`/dashboard/tasks/${item.taskDocId}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-[10px] font-semibold text-primary hover:underline inline-flex items-center gap-0.5"
+                                        title="View original task in All Tasks"
+                                      >
+                                        <span>View Task</span>
+                                        <ExternalLink className="h-2.5 w-2.5" />
+                                      </a>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-[10px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/25 px-1.5 py-0.5 rounded">
+                                    Manual Point
+                                  </span>
+                                )}
+
+                                {isCompleted && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-500 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">
+                                    <CheckCircle2 className="h-2.5 w-2.5" />
+                                    <span>Completed</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Title / Text */}
+                              <p className="text-foreground leading-relaxed break-words font-medium text-xs">
+                                {item.text}
+                              </p>
+
+                              {/* Completion timestamp */}
+                              {isCompleted && item.completedByName && (
+                                <p className="text-[10px] text-emerald-500 font-medium">
+                                  Completed by {item.completedByName} {item.completedDate ? `on ${formatDate(item.completedDate)}` : ''}
+                                </p>
+                              )}
+
+                              {/* Developer Comment */}
+                              {item.comment && !isEditingComment && (
+                                <div className="p-2 rounded-lg bg-card/60 border border-card-border/80 text-[11px] text-foreground/90 flex items-start gap-1.5 mt-1">
+                                  <MessageSquare className="h-3 w-3 text-primary shrink-0 mt-0.5" />
+                                  <div className="flex-1 min-w-0">
+                                    <span className="font-bold text-muted-foreground text-[10px] block uppercase">Comment:</span>
+                                    <span className="break-words">{item.comment}</span>
+                                  </div>
+                                  {isEditable && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingCommentIndex(idx);
+                                        setEditingCommentText(item.comment || '');
+                                      }}
+                                      className="text-muted-foreground hover:text-foreground text-[10px] underline ml-1 shrink-0"
+                                    >
+                                      Edit
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Inline Comment Editing / Adding */}
+                              {isEditingComment && (
+                                <div className="flex items-center gap-2 mt-1.5">
+                                  <input
+                                    type="text"
+                                    value={editingCommentText}
+                                    onChange={(e) => setEditingCommentText(e.target.value)}
+                                    placeholder="Enter comment..."
+                                    autoFocus
+                                    className="flex-1 px-2.5 py-1 rounded bg-accent/40 border border-card-border text-foreground text-xs"
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={pointActionLoading}
+                                    onClick={() => handleSaveComment(item.id, editingCommentText)}
+                                    className="px-2 py-1 rounded bg-primary text-primary-foreground text-xs font-bold"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingCommentIndex(null)}
+                                    className="px-2 py-1 rounded text-muted-foreground text-xs"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
 
                           {/* Point Action Buttons */}
                           {isEditable && (
                             <div className="flex items-center gap-1 shrink-0 self-start ml-2">
+                              {/* Option to add comment if none exists */}
+                              {!item.comment && !isEditingComment && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingCommentIndex(idx);
+                                    setEditingCommentText('');
+                                  }}
+                                  className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
+                                  title="Add comment"
+                                >
+                                  <MessageSquare className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+
                               {isConfirmingDelete ? (
                                 <div className="flex items-center gap-1.5 bg-destructive/10 p-1 rounded-lg border border-destructive/20 animate-in fade-in">
                                   <span className="text-[10px] font-bold text-destructive px-1">Delete?</span>
@@ -449,7 +656,7 @@ export default function ChangeDetailModal({
                                     type="button"
                                     onClick={() => {
                                       setEditingPointIndex(idx);
-                                      setEditingPointText(pt);
+                                      setEditingPointText(item.text);
                                       setConfirmDeletePointIndex(null);
                                     }}
                                     className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"

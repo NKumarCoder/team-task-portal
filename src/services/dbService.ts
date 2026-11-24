@@ -29,10 +29,11 @@ import {
   projectsCollection,
   todosCollection,
   projectChangeChecklistsCollection,
-  productionReleasesCollection
+  productionReleasesCollection,
+  releaseDeletionLogsCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User, ProjectChangeChecklist, ProductionRelease, ReleaseChangeItem, VerificationChecklistItem, ChangeRejectionRecord, getChecklistPoints, getReleaseItemPoints } from '../types';
-import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients } from '../utils';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User, ProjectChangeChecklist, ProductionRelease, ReleaseChangeItem, VerificationChecklistItem, ChangeRejectionRecord, ChangeChecklistItem, ReleaseDeletionLog, getChecklistPoints, getChecklistItems, getReleaseItemPoints } from '../types';
+import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients, sanitizeFirestorePayload } from '../utils';
 import { canTransitionToStatus, isSuperAdminEmail } from '../utils/permissions';
 import { MAX_ASSIGNEES } from '../constants';
 
@@ -3010,19 +3011,77 @@ class DBService {
     data: Omit<ProjectChangeChecklist, 'id' | 'status' | 'createdDate' | 'updatedDate'>
   ): Promise<string> {
     const now = new Date().toISOString();
-    const cleanPoints = data.points && Array.isArray(data.points)
-      ? data.points.map(p => p.trim()).filter(Boolean)
-      : (data.changes || []).map(p => p.trim()).filter(Boolean);
+    const rawItems: ChangeChecklistItem[] = data.items && Array.isArray(data.items)
+      ? data.items
+      : (data.points || []).map((p, idx) => ({
+          id: `item-${idx + 1}`,
+          text: p,
+          type: 'manual',
+          status: 'Pending'
+        }));
+
+    // Build clean items ensuring no undefined keys are present
+    const cleanItems: ChangeChecklistItem[] = rawItems
+      .filter(it => it && typeof it.text === 'string' && it.text.trim())
+      .map(it => {
+        const item: Record<string, any> = {
+          id: it.id,
+          text: it.text.trim(),
+          type: it.type || 'manual',
+          status: it.status || 'Pending'
+        };
+        if (it.taskId) item.taskId = it.taskId;
+        if (it.taskDocId) item.taskDocId = it.taskDocId;
+        if (it.taskTitle) item.taskTitle = it.taskTitle;
+        if (it.taskStatus) item.taskStatus = it.taskStatus;
+        if (it.taskModule) item.taskModule = it.taskModule;
+        if (it.taskPriority) item.taskPriority = it.taskPriority;
+        if (it.status === 'Completed') {
+          if (it.completedBy) item.completedBy = it.completedBy;
+          if (it.completedByName) item.completedByName = it.completedByName;
+          if (it.completedDate) item.completedDate = it.completedDate;
+        }
+        if (typeof it.comment === 'string' && it.comment.trim()) {
+          item.comment = it.comment.trim();
+        }
+        return item as ChangeChecklistItem;
+      });
+
+    const cleanPoints = cleanItems.map(it => it.text);
+
+    const verificationItems: VerificationChecklistItem[] = cleanItems.map((it, idx) => {
+      const vItem: Record<string, any> = {
+        id: `p-${idx + 1}`,
+        text: it.text,
+        status: 'Pending',
+        type: it.type,
+        developerCompleted: it.status === 'Completed'
+      };
+      if (it.taskId) vItem.taskId = it.taskId;
+      if (it.taskDocId) vItem.taskDocId = it.taskDocId;
+      if (it.taskTitle) vItem.taskTitle = it.taskTitle;
+      if (it.taskStatus) vItem.taskStatus = it.taskStatus;
+      if (it.taskModule) vItem.taskModule = it.taskModule;
+      if (it.status === 'Completed') {
+        if (it.completedBy) vItem.developerCompletedBy = it.completedBy;
+        if (it.completedByName) vItem.developerCompletedByName = it.completedByName;
+        if (it.completedDate) vItem.developerCompletedDate = it.completedDate;
+      }
+      if (typeof it.comment === 'string' && it.comment.trim()) {
+        vItem.developerComment = it.comment.trim();
+      }
+      return vItem as VerificationChecklistItem;
+    });
 
     const payload: Omit<ProjectChangeChecklist, 'id'> = {
       projectId: data.projectId,
       projectName: data.projectName,
       title: data.title.trim(),
       description: data.description ? data.description.trim() : '',
+      items: cleanItems,
       points: cleanPoints,
-      // Backward compatibility fields
       changes: cleanPoints,
-      verificationItems: cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      verificationItems,
       status: 'Available for Release',
       createdBy: data.createdBy,
       createdByName: data.createdByName,
@@ -3033,7 +3092,27 @@ class DBService {
       rejectionHistory: []
     };
 
-    const docRef = await addDoc(projectChangeChecklistsCollection, payload);
+    const safePayload = sanitizeFirestorePayload(payload);
+
+    // Development diagnostics
+    if (process.env.NODE_ENV !== 'production') {
+      const findUndefined = (obj: any, path = ''): string[] => {
+        let issues: string[] = [];
+        if (!obj || typeof obj !== 'object') return issues;
+        for (const [k, v] of Object.entries(obj)) {
+          const fullPath = path ? `${path}.${k}` : k;
+          if (v === undefined) issues.push(fullPath);
+          else if (v && typeof v === 'object') issues = issues.concat(findUndefined(v, fullPath));
+        }
+        return issues;
+      };
+      const undefinedFields = findUndefined(safePayload);
+      if (undefinedFields.length > 0) {
+        console.error('[dbService.createProjectChangeChecklist] Undefined fields detected:', undefinedFields);
+      }
+    }
+
+    const docRef = await addDoc(projectChangeChecklistsCollection, safePayload);
     return docRef.id;
   }
 
@@ -3046,13 +3125,67 @@ class DBService {
       ...updates,
       updatedDate: new Date().toISOString()
     };
-    if (updates.points && Array.isArray(updates.points)) {
+    if (updates.items && Array.isArray(updates.items)) {
+      const cleanItems = updates.items
+        .filter(it => it && typeof it.text === 'string' && it.text.trim())
+        .map(it => {
+          const item: Record<string, any> = {
+            id: it.id,
+            text: it.text.trim(),
+            type: it.type || 'manual',
+            status: it.status || 'Pending'
+          };
+          if (it.taskId) item.taskId = it.taskId;
+          if (it.taskDocId) item.taskDocId = it.taskDocId;
+          if (it.taskTitle) item.taskTitle = it.taskTitle;
+          if (it.taskStatus) item.taskStatus = it.taskStatus;
+          if (it.taskModule) item.taskModule = it.taskModule;
+          if (it.taskPriority) item.taskPriority = it.taskPriority;
+          if (it.status === 'Completed') {
+            if (it.completedBy) item.completedBy = it.completedBy;
+            if (it.completedByName) item.completedByName = it.completedByName;
+            if (it.completedDate) item.completedDate = it.completedDate;
+          }
+          if (typeof it.comment === 'string' && it.comment.trim()) {
+            item.comment = it.comment.trim();
+          }
+          return item;
+        });
+
+      payload.items = cleanItems;
+      const cleanPoints = cleanItems.map(it => it.text);
+      payload.points = cleanPoints;
+      payload.changes = cleanPoints;
+      payload.verificationItems = cleanItems.map((it, idx) => {
+        const vItem: Record<string, any> = {
+          id: `p-${idx + 1}`,
+          text: it.text,
+          status: 'Pending',
+          type: it.type,
+          developerCompleted: it.status === 'Completed'
+        };
+        if (it.taskId) vItem.taskId = it.taskId;
+        if (it.taskDocId) vItem.taskDocId = it.taskDocId;
+        if (it.taskTitle) vItem.taskTitle = it.taskTitle;
+        if (it.taskStatus) vItem.taskStatus = it.taskStatus;
+        if (it.taskModule) vItem.taskModule = it.taskModule;
+        if (it.status === 'Completed') {
+          if (it.completedBy) vItem.developerCompletedBy = it.completedBy;
+          if (it.completedByName) vItem.developerCompletedByName = it.completedByName;
+          if (it.completedDate) vItem.developerCompletedDate = it.completedDate;
+        }
+        if (typeof it.comment === 'string' && it.comment.trim()) {
+          vItem.developerComment = it.comment.trim();
+        }
+        return vItem;
+      });
+    } else if (updates.points && Array.isArray(updates.points)) {
       const cleanPoints = updates.points.map(p => p.trim()).filter(Boolean);
       payload.points = cleanPoints;
       payload.changes = cleanPoints;
       payload.verificationItems = cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' }));
     }
-    await updateDoc(docRef, payload);
+    await updateDoc(docRef, sanitizeFirestorePayload(payload));
   }
 
   async deleteProjectChangeChecklist(id: string): Promise<void> {
@@ -3072,6 +3205,73 @@ class DBService {
     await deleteDoc(docRef);
   }
 
+  async toggleChecklistItemStatus(
+    checklistId: string,
+    itemId: string,
+    userEmail: string,
+    userName: string
+  ): Promise<ChangeChecklistItem[]> {
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentItems = getChecklistItems(data);
+    const now = new Date().toISOString();
+
+    const updatedItems = currentItems.map(it => {
+      if (it.id === itemId) {
+        const nextStatus: 'Pending' | 'Completed' = it.status === 'Completed' ? 'Pending' : 'Completed';
+        return {
+          ...it,
+          status: nextStatus,
+          completedBy: nextStatus === 'Completed' ? userEmail : undefined,
+          completedByName: nextStatus === 'Completed' ? userName : undefined,
+          completedDate: nextStatus === 'Completed' ? now : undefined
+        };
+      }
+      return it;
+    });
+
+    await updateDoc(docRef, {
+      items: updatedItems,
+      updatedDate: now
+    });
+
+    return updatedItems;
+  }
+
+  async updateChecklistItemComment(
+    checklistId: string,
+    itemId: string,
+    comment: string
+  ): Promise<ChangeChecklistItem[]> {
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentItems = getChecklistItems(data);
+    const now = new Date().toISOString();
+
+    const updatedItems = currentItems.map(it => {
+      if (it.id === itemId) {
+        return {
+          ...it,
+          comment: comment.trim()
+        };
+      }
+      return it;
+    });
+
+    await updateDoc(docRef, {
+      items: updatedItems,
+      updatedDate: now
+    });
+
+    return updatedItems;
+  }
+
   async addChangePoint(checklistId: string, pointText: string): Promise<string[]> {
     const cleanText = pointText.trim();
     if (!cleanText) throw new Error("Point text cannot be empty.");
@@ -3081,13 +3281,36 @@ class DBService {
     if (!snap.exists()) throw new Error("Change checklist not found.");
 
     const data = snap.data() as ProjectChangeChecklist;
-    const currentPoints = getChecklistPoints(data);
-    const updatedPoints = [...currentPoints, cleanText];
+    const currentItems = getChecklistItems(data);
+    const newItem: ChangeChecklistItem = {
+      id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      text: cleanText,
+      type: 'manual',
+      status: 'Pending'
+    };
+    const updatedItems = [...currentItems, newItem];
+    const updatedPoints = updatedItems.map(it => it.text);
 
     await updateDoc(docRef, {
+      items: updatedItems,
       points: updatedPoints,
       changes: updatedPoints,
-      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      verificationItems: updatedItems.map((it, idx) => ({
+        id: `p-${idx + 1}`,
+        text: it.text,
+        status: 'Pending',
+        type: it.type,
+        taskId: it.taskId,
+        taskDocId: it.taskDocId,
+        taskTitle: it.taskTitle,
+        taskStatus: it.taskStatus,
+        taskModule: it.taskModule,
+        developerCompleted: it.status === 'Completed',
+        developerCompletedBy: it.completedBy,
+        developerCompletedByName: it.completedByName,
+        developerCompletedDate: it.completedDate,
+        developerComment: it.comment
+      })),
       updatedDate: new Date().toISOString()
     });
 
@@ -3103,18 +3326,38 @@ class DBService {
     if (!snap.exists()) throw new Error("Change checklist not found.");
 
     const data = snap.data() as ProjectChangeChecklist;
-    const currentPoints = getChecklistPoints(data);
-    if (pointIndex < 0 || pointIndex >= currentPoints.length) {
+    const currentItems = getChecklistItems(data);
+    if (pointIndex < 0 || pointIndex >= currentItems.length) {
       throw new Error("Invalid point index.");
     }
 
-    const updatedPoints = [...currentPoints];
-    updatedPoints[pointIndex] = cleanText;
+    const updatedItems = [...currentItems];
+    updatedItems[pointIndex] = {
+      ...updatedItems[pointIndex],
+      text: cleanText
+    };
+    const updatedPoints = updatedItems.map(it => it.text);
 
     await updateDoc(docRef, {
+      items: updatedItems,
       points: updatedPoints,
       changes: updatedPoints,
-      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      verificationItems: updatedItems.map((it, idx) => ({
+        id: `p-${idx + 1}`,
+        text: it.text,
+        status: 'Pending',
+        type: it.type,
+        taskId: it.taskId,
+        taskDocId: it.taskDocId,
+        taskTitle: it.taskTitle,
+        taskStatus: it.taskStatus,
+        taskModule: it.taskModule,
+        developerCompleted: it.status === 'Completed',
+        developerCompletedBy: it.completedBy,
+        developerCompletedByName: it.completedByName,
+        developerCompletedDate: it.completedDate,
+        developerComment: it.comment
+      })),
       updatedDate: new Date().toISOString()
     });
 
@@ -3127,20 +3370,37 @@ class DBService {
     if (!snap.exists()) throw new Error("Change checklist not found.");
 
     const data = snap.data() as ProjectChangeChecklist;
-    const currentPoints = getChecklistPoints(data);
-    if (currentPoints.length <= 1) {
+    const currentItems = getChecklistItems(data);
+    if (currentItems.length <= 1) {
       throw new Error("A change checklist must have at least one point.");
     }
-    if (pointIndex < 0 || pointIndex >= currentPoints.length) {
+    if (pointIndex < 0 || pointIndex >= currentItems.length) {
       throw new Error("Invalid point index.");
     }
 
-    const updatedPoints = currentPoints.filter((_, idx) => idx !== pointIndex);
+    const updatedItems = currentItems.filter((_, idx) => idx !== pointIndex);
+    const updatedPoints = updatedItems.map(it => it.text);
 
     await updateDoc(docRef, {
+      items: updatedItems,
       points: updatedPoints,
       changes: updatedPoints,
-      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      verificationItems: updatedItems.map((it, idx) => ({
+        id: `p-${idx + 1}`,
+        text: it.text,
+        status: 'Pending',
+        type: it.type,
+        taskId: it.taskId,
+        taskDocId: it.taskDocId,
+        taskTitle: it.taskTitle,
+        taskStatus: it.taskStatus,
+        taskModule: it.taskModule,
+        developerCompleted: it.status === 'Completed',
+        developerCompletedBy: it.completedBy,
+        developerCompletedByName: it.completedByName,
+        developerCompletedDate: it.completedDate,
+        developerComment: it.comment
+      })),
       updatedDate: new Date().toISOString()
     });
 
@@ -3152,18 +3412,41 @@ class DBService {
     updates: {
       title?: string;
       description?: string;
+      items?: ChangeChecklistItem[];
       points?: string[];
       changes?: string[];
       verificationItems?: VerificationChecklistItem[];
     }
   ): Promise<void> {
     const docRef = doc(db, 'projectChangeChecklists', id);
-    const cleanPoints = updates.points || updates.changes || [];
+    const items: ChangeChecklistItem[] = updates.items || (updates.points || []).map((p, idx) => ({
+      id: `item-${idx + 1}`,
+      text: p,
+      type: 'manual',
+      status: 'Pending'
+    }));
+    const cleanPoints = items.map(it => it.text.trim()).filter(Boolean);
     await updateDoc(docRef, {
       ...updates,
+      items,
       points: cleanPoints,
       changes: cleanPoints,
-      verificationItems: cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      verificationItems: items.map((it, idx) => ({
+        id: `p-${idx + 1}`,
+        text: it.text,
+        status: 'Pending',
+        type: it.type,
+        taskId: it.taskId,
+        taskDocId: it.taskDocId,
+        taskTitle: it.taskTitle,
+        taskStatus: it.taskStatus,
+        taskModule: it.taskModule,
+        developerCompleted: it.status === 'Completed',
+        developerCompletedBy: it.completedBy,
+        developerCompletedByName: it.completedByName,
+        developerCompletedDate: it.completedDate,
+        developerComment: it.comment
+      })),
       status: 'Available for Release',
       currentReleaseId: null,
       currentReleaseName: null,
@@ -3226,69 +3509,135 @@ class DBService {
     createdBy: string;
     createdByName: string;
   }): Promise<string> {
-    // 1. Fetch the selected change checklists to build an authoritative snapshot
-    const allChecklists = await this.getProjectChangeChecklists();
-    const selected = allChecklists.filter(c => c.id && data.changeChecklistIds.includes(c.id));
+    const cleanName = (data.name || '').trim();
+    if (!cleanName) {
+      throw new Error("Release Name is mandatory.");
+    }
 
-    if (selected.length === 0) {
+    const cleanReleaseDate = (data.releaseDate || '').trim();
+    if (!cleanReleaseDate) {
+      throw new Error("Release Date is mandatory.");
+    }
+
+    if (!data.changeChecklistIds || data.changeChecklistIds.length === 0) {
       throw new Error("Please select at least one available project change.");
+    }
+
+    // Deduplicate change checklist IDs
+    const uniqueIds = Array.from(new Set(data.changeChecklistIds.filter(Boolean)));
+    if (uniqueIds.length === 0) {
+      throw new Error("Please select at least one valid project change.");
+    }
+
+    // 1. Fetch authoritative change checklists to validate eligibility
+    const allChecklists = await this.getProjectChangeChecklists();
+    const checklistMap = new Map(allChecklists.filter(c => !!c.id).map(c => [c.id!, c]));
+
+    const selected: ProjectChangeChecklist[] = [];
+    for (const id of uniqueIds) {
+      const change = checklistMap.get(id);
+      if (!change) {
+        throw new Error(`The selected change checklist with ID "${id}" no longer exists in the database.`);
+      }
+      if (change.status !== 'Available for Release') {
+        throw new Error(`The change checklist "${change.title}" is not available for release (Current status: "${change.status}"). Only changes with status "Available for Release" can be included.`);
+      }
+      if (change.currentReleaseId) {
+        throw new Error(`The change checklist "${change.title}" is already assigned to active release "${change.currentReleaseName || change.currentReleaseId}".`);
+      }
+      selected.push(change);
     }
 
     const now = new Date().toISOString();
 
+    // 2. Build clean release items with zero undefined properties
     const items: ReleaseChangeItem[] = selected.map(c => {
-      const commonPoints = getChecklistPoints(c);
-      const verificationList: VerificationChecklistItem[] = commonPoints.map((p, idx) => ({
-        id: `p-${idx + 1}`,
-        text: p,
-        status: 'Pending'
-      }));
+      const checklistItems = getChecklistItems(c);
+      const verificationList: VerificationChecklistItem[] = checklistItems.map((item, idx) => {
+        const vItem: VerificationChecklistItem = {
+          id: `p-${idx + 1}`,
+          text: item.text,
+          status: 'Pending',
+          type: item.type,
+          developerCompleted: item.status === 'Completed'
+        };
 
-      return {
+        if (item.taskId) vItem.taskId = item.taskId;
+        if (item.taskDocId) vItem.taskDocId = item.taskDocId;
+        if (item.taskTitle) vItem.taskTitle = item.taskTitle;
+        if (item.taskStatus) vItem.taskStatus = item.taskStatus;
+        if (item.taskModule) vItem.taskModule = item.taskModule;
+        if (item.taskPriority) vItem.taskPriority = item.taskPriority;
+        if (item.completedBy) vItem.developerCompletedBy = item.completedBy;
+        if (item.completedByName) vItem.developerCompletedByName = item.completedByName;
+        if (item.completedDate) vItem.developerCompletedDate = item.completedDate;
+        if (item.comment) vItem.developerComment = item.comment;
+
+        return vItem;
+      });
+
+      const commonPoints = verificationList.map(v => v.text);
+
+      const releaseItem: ReleaseChangeItem = {
         changeChecklistId: c.id!,
         title: c.title,
         description: c.description || '',
-        projectId: c.projectId,
-        projectName: c.projectName,
-        developerEmail: c.createdBy,
-        developerName: c.createdByName,
+        projectId: c.projectId || '',
+        projectName: c.projectName || '',
+        developerEmail: c.createdBy || '',
+        developerName: c.createdByName || '',
         points: verificationList,
         // Backward compatibility
         changes: commonPoints,
         verificationItems: verificationList,
         status: 'Pending QA'
       };
+
+      return releaseItem;
     });
 
     const releasePayload: Omit<ProductionRelease, 'id'> = {
-      name: data.name.trim(),
-      releaseDate: data.releaseDate,
+      name: cleanName,
+      releaseDate: cleanReleaseDate,
       status: 'In QA',
-      changeChecklistIds: data.changeChecklistIds,
+      changeChecklistIds: uniqueIds,
       items,
       createdBy: data.createdBy,
       createdByName: data.createdByName,
       createdDate: now
     };
 
-    // 2. Add release document
-    const releaseDocRef = await addDoc(productionReleasesCollection, releasePayload);
-    const releaseId = releaseDocRef.id;
+    // Sanitize payload recursively to eliminate any undefined fields
+    const sanitizedPayload = sanitizeFirestorePayload(releasePayload);
 
-    // 3. Update all selected change checklists to 'Included in Release'
-    const batch = writeBatch(db);
-    for (const c of selected) {
-      const checklistDoc = doc(db, 'projectChangeChecklists', c.id!);
-      batch.update(checklistDoc, {
-        status: 'Included in Release',
-        currentReleaseId: releaseId,
-        currentReleaseName: data.name.trim(),
-        updatedDate: now
+    // Development-only diagnostics (safe metadata only)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[createProductionRelease] Validated & sanitized payload:', {
+        name: sanitizedPayload.name,
+        releaseDate: sanitizedPayload.releaseDate,
+        changeChecklistIds: sanitizedPayload.changeChecklistIds,
+        itemsCount: sanitizedPayload.items?.length
       });
     }
+
+    // 3. Perform atomic batch write for BOTH release creation and change status updates
+    const batch = writeBatch(db);
+    const releaseDocRef = doc(productionReleasesCollection);
+    batch.set(releaseDocRef, sanitizedPayload);
+
+    for (const c of selected) {
+      const checklistDoc = doc(db, 'projectChangeChecklists', c.id!);
+      batch.update(checklistDoc, sanitizeFirestorePayload({
+        status: 'Included in Release',
+        currentReleaseId: releaseDocRef.id,
+        currentReleaseName: cleanName,
+        updatedDate: now
+      }));
+    }
+
     await batch.commit();
 
-    return releaseId;
+    return releaseDocRef.id;
   }
 
   async updateReleaseItemVerification(
@@ -3313,23 +3662,27 @@ class DBService {
     const now = new Date().toISOString();
     const currentPoints = getReleaseItemPoints(targetItem);
 
-    const updatedPoints = currentPoints.map(v => 
-      v.id === itemId 
-        ? { 
-            ...v, 
-            status, 
-            qaUser: qaUser || v.qaUser, 
-            qaUserName: qaUserName || v.qaUserName, 
-            qaDate: status !== 'Pending' ? now : undefined 
-          } 
-        : v
-    );
+    const updatedPoints = currentPoints.map(v => {
+      if (v.id !== itemId) return v;
+      const updated: VerificationChecklistItem = {
+        ...v,
+        status,
+        qaUser: qaUser || v.qaUser,
+        qaUserName: qaUserName || v.qaUserName,
+      };
+      if (status !== 'Pending') {
+        updated.qaDate = now;
+      } else {
+        delete updated.qaDate;
+      }
+      return updated;
+    });
 
     targetItem.points = updatedPoints;
     targetItem.verificationItems = updatedPoints;
 
     items[targetItemIndex] = targetItem;
-    await updateDoc(releaseRef, { items });
+    await updateDoc(releaseRef, sanitizeFirestorePayload({ items }));
   }
 
   async completeReleaseChangeItem(
@@ -3372,14 +3725,14 @@ class DBService {
       ? 'Partially Rejected'
       : releaseData.status;
 
-    await updateDoc(releaseRef, { items, status: newReleaseStatus });
+    await updateDoc(releaseRef, sanitizeFirestorePayload({ items, status: newReleaseStatus }));
 
     // Update the underlying change checklist
     const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
-    await updateDoc(checklistRef, {
+    await updateDoc(checklistRef, sanitizeFirestorePayload({
       status: 'Completed',
       updatedDate: now
-    });
+    }));
   }
 
   async rejectReleaseChangeItem(
@@ -3420,7 +3773,7 @@ class DBService {
     const allDecided = items.every(it => it.status !== 'Pending QA');
     const newReleaseStatus = allDecided ? 'Partially Rejected' : 'In QA';
 
-    await updateDoc(releaseRef, { items, status: newReleaseStatus });
+    await updateDoc(releaseRef, sanitizeFirestorePayload({ items, status: newReleaseStatus }));
 
     // Update underlying change checklist and preserve rejection history
     const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
@@ -3440,11 +3793,84 @@ class DBService {
       ...(failedPointText ? { failedPointText } : {})
     };
 
-    await updateDoc(checklistRef, {
+    await updateDoc(checklistRef, sanitizeFirestorePayload({
       status: 'Rejected by QA',
       rejectionHistory: [...existingHistory, rejectionRecord],
       updatedDate: now
-    });
+    }));
+  }
+
+  async deleteCompletedProductionReleases(data: {
+    releaseIds: string[];
+    deletedBy: string;
+    deletedByName: string;
+    emailRecipients: string[];
+    emailSubject: string;
+    emailMessageId?: string;
+    reason?: string;
+  }): Promise<{ deletedCount: number; operationId: string }> {
+    if (!data.releaseIds || data.releaseIds.length === 0) {
+      throw new Error("No releases selected for deletion.");
+    }
+
+    const operationId = `del-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+
+    // 1. Fetch each release to verify eligibility (MUST be status === 'Completed')
+    const releaseNames: string[] = [];
+    const validDocsToDelete: string[] = [];
+
+    for (const relId of data.releaseIds) {
+      const docRef = doc(db, 'productionReleases', relId);
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) {
+        continue;
+      }
+      const relData = snap.data() as ProductionRelease;
+      if (relData.status !== 'Completed') {
+        throw new Error(
+          `Release "${relData.name}" cannot be deleted because its status is "${relData.status}". Only "Completed" release verification records can be purged.`
+        );
+      }
+      releaseNames.push(relData.name);
+      validDocsToDelete.push(relId);
+    }
+
+    if (validDocsToDelete.length === 0) {
+      throw new Error("None of the selected releases exist or are eligible for deletion.");
+    }
+
+    // 2. Perform atomic batch deletion of the completed release documents
+    const batch = writeBatch(db);
+    for (const relId of validDocsToDelete) {
+      const docRef = doc(db, 'productionReleases', relId);
+      batch.delete(docRef);
+    }
+
+    // 3. Record audit history in releaseDeletionLogs
+    const logDocRef = doc(releaseDeletionLogsCollection);
+    const auditPayload: ReleaseDeletionLog = {
+      operationId,
+      deletedRecordIds: validDocsToDelete,
+      releaseNames,
+      deletedBy: data.deletedBy.toLowerCase(),
+      deletedByName: data.deletedByName,
+      deletionDate: now,
+      recordCount: validDocsToDelete.length,
+      emailRecipients: data.emailRecipients,
+      emailSubject: data.emailSubject,
+      emailMessageId: data.emailMessageId,
+      reason: data.reason ? data.reason.trim() : undefined
+    };
+
+    batch.set(logDocRef, sanitizeFirestorePayload(auditPayload));
+
+    await batch.commit();
+
+    return {
+      deletedCount: validDocsToDelete.length,
+      operationId
+    };
   }
 }
 

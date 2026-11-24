@@ -19,7 +19,11 @@ import {
   Eye,
   Edit3,
   Loader2,
-  ChevronRight
+  ChevronRight,
+  Trash2,
+  CheckSquare,
+  Square,
+  Mail
 } from 'lucide-react';
 import { dbService } from '@/services/dbService';
 import { Project, ProjectChangeChecklist, ProductionRelease, getChecklistPoints } from '@/types';
@@ -29,6 +33,7 @@ import CreateChangeDialog from '@/components/changes/CreateChangeDialog';
 import ChangeDetailModal from '@/components/changes/ChangeDetailModal';
 import CreateReleaseDialog from '@/components/changes/CreateReleaseDialog';
 import ReleaseVerificationView from '@/components/changes/ReleaseVerificationView';
+import DeleteReleaseConfirmationModal from '@/components/changes/DeleteReleaseConfirmationModal';
 import toast from 'react-hot-toast';
 
 export default function ChangeChecklistsPage() {
@@ -52,6 +57,12 @@ export default function ChangeChecklistsPage() {
   const [viewingChecklist, setViewingChecklist] = useState<ProjectChangeChecklist | null>(null);
   const [isCreateReleaseOpen, setIsCreateReleaseOpen] = useState(false);
   const [activeVerificationRelease, setActiveVerificationRelease] = useState<ProductionRelease | null>(null);
+
+  // Completed Releases Deletion & Selection States
+  const [selectedCompletedReleaseIds, setSelectedCompletedReleaseIds] = useState<Set<string>>(new Set());
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [releasesToDelete, setReleasesToDelete] = useState<ProductionRelease[]>([]);
+  const [isDeleteAllActive, setIsDeleteAllActive] = useState(false);
 
   // Subscriptions to live data
   useEffect(() => {
@@ -143,6 +154,49 @@ export default function ChangeChecklistsPage() {
   };
 
   const isReleaseManager = user?.role === 'SuperAdmin' || user?.role === 'Admin';
+
+  // Eligible completed releases list
+  const completedReleases = useMemo(() => {
+    return releases.filter(r => r.status === 'Completed');
+  }, [releases]);
+
+  const toggleSelectCompletedRelease = (id: string) => {
+    setSelectedCompletedReleaseIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllCompleted = () => {
+    setSelectedCompletedReleaseIds(new Set(completedReleases.map(r => r.id!).filter(Boolean)));
+  };
+
+  const handleClearCompletedSelection = () => {
+    setSelectedCompletedReleaseIds(new Set());
+  };
+
+  const openIndividualDelete = (rel: ProductionRelease) => {
+    setReleasesToDelete([rel]);
+    setIsDeleteAllActive(false);
+    setIsDeleteModalOpen(true);
+  };
+
+  const openBulkDelete = () => {
+    const selected = completedReleases.filter(r => r.id && selectedCompletedReleaseIds.has(r.id));
+    if (selected.length === 0) return;
+    setReleasesToDelete(selected);
+    setIsDeleteAllActive(false);
+    setIsDeleteModalOpen(true);
+  };
+
+  const openDeleteAllCompleted = () => {
+    if (completedReleases.length === 0) return;
+    setReleasesToDelete(completedReleases);
+    setIsDeleteAllActive(true);
+    setIsDeleteModalOpen(true);
+  };
 
   return (
     <div className="space-y-6">
@@ -404,20 +458,89 @@ export default function ChangeChecklistsPage() {
       {/* TAB 2: Production Releases */}
       {activeTab === 'releases' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between p-3 rounded-2xl glass-panel bg-card/60 border border-card-border">
-            <p className="text-xs text-muted-foreground font-medium">
-              Production releases group multiple project changes for structured QA verification and deployment.
-            </p>
-            {isReleaseManager && (
-              <button
-                onClick={() => setIsCreateReleaseOpen(true)}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-purple-600 text-white text-xs font-bold hover:bg-purple-500 transition-all cursor-pointer shadow-md shadow-purple-600/20 shrink-0"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                <span>Create Production Release</span>
-              </button>
-            )}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-2xl glass-panel bg-card/60 border border-card-border gap-3">
+            <div>
+              <p className="text-xs text-muted-foreground font-medium">
+                Production releases group multiple project changes for structured QA verification and deployment.
+              </p>
+              {completedReleases.length > 0 && (
+                <p className="text-[11px] text-emerald-400 font-bold mt-0.5">
+                  {completedReleases.length} completed release{completedReleases.length === 1 ? '' : 's'} eligible for archival & deletion
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {isReleaseManager && selectedCompletedReleaseIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={openBulkDelete}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all cursor-pointer shadow-md shadow-rose-600/20"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete Selected ({selectedCompletedReleaseIds.size})</span>
+                </button>
+              )}
+
+              {isReleaseManager && completedReleases.length > 0 && (
+                <button
+                  type="button"
+                  onClick={openDeleteAllCompleted}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/25 text-xs font-bold transition-all cursor-pointer"
+                  title="Archive and purge all completed release records"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete All Completed ({completedReleases.length})</span>
+                </button>
+              )}
+
+              {isReleaseManager && (
+                <button
+                  onClick={() => setIsCreateReleaseOpen(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-purple-600 text-white text-xs font-bold hover:bg-purple-500 transition-all cursor-pointer shadow-md shadow-purple-600/20"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Create Production Release</span>
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Bulk Selection Strip for Completed Releases */}
+          {completedReleases.length > 0 && isReleaseManager && (
+            <div className="flex items-center justify-between px-4 py-2.5 rounded-xl bg-accent/20 border border-card-border/60 text-xs">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={selectedCompletedReleaseIds.size === completedReleases.length ? handleClearCompletedSelection : handleSelectAllCompleted}
+                  className="flex items-center gap-1.5 text-foreground font-semibold hover:text-primary transition-colors cursor-pointer"
+                >
+                  {selectedCompletedReleaseIds.size === completedReleases.length ? (
+                    <CheckSquare className="h-4 w-4 text-primary" />
+                  ) : (
+                    <Square className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <span>
+                    {selectedCompletedReleaseIds.size === completedReleases.length ? 'Deselect All Completed' : 'Select All Completed'}
+                  </span>
+                </button>
+                <span className="text-muted-foreground">&bull;</span>
+                <span className="text-muted-foreground">
+                  <strong className="text-foreground">{selectedCompletedReleaseIds.size}</strong> of {completedReleases.length} selected
+                </span>
+              </div>
+
+              {selectedCompletedReleaseIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearCompletedSelection}
+                  className="text-[11px] text-muted-foreground hover:text-foreground underline cursor-pointer"
+                >
+                  Clear Selection
+                </button>
+              )}
+            </div>
+          )}
 
           {loading ? (
             <div className="py-16 text-center space-y-2">
@@ -447,43 +570,67 @@ export default function ChangeChecklistsPage() {
                 const total = rel.items.length;
                 const completed = rel.items.filter(it => it.status === 'Completed').length;
                 const rejected = rel.items.filter(it => it.status === 'Rejected').length;
+                const isCompleted = rel.status === 'Completed';
+                const isSelected = Boolean(rel.id && selectedCompletedReleaseIds.has(rel.id));
 
                 return (
                   <div
                     key={rel.id}
-                    className="glass-panel p-5 rounded-2xl border border-card-border bg-card/60 hover:bg-accent/20 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className={`glass-panel p-5 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                      isSelected 
+                        ? 'bg-primary/[0.06] border-primary/40 shadow-xs' 
+                        : 'border-card-border bg-card/60 hover:bg-accent/20'
+                    }`}
                   >
-                    <div className="space-y-1.5 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          rel.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25' :
-                          rel.status === 'Partially Rejected' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' :
-                          'bg-blue-500/15 text-blue-400 border border-blue-500/25'
-                        }`}>
-                          {rel.status}
-                        </span>
-                        <span className="text-xs text-muted-foreground flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          Release Date: <strong className="text-foreground">{rel.releaseDate}</strong>
-                        </span>
-                      </div>
+                    <div className="flex items-start gap-3.5 min-w-0">
+                      {/* Selection checkbox for completed releases */}
+                      {isCompleted && isReleaseManager && (
+                        <button
+                          type="button"
+                          onClick={() => rel.id && toggleSelectCompletedRelease(rel.id)}
+                          className="mt-1 text-primary hover:opacity-80 transition-opacity cursor-pointer shrink-0"
+                          title={isSelected ? "Deselect" : "Select for bulk delete"}
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="h-5 w-5 text-primary" />
+                          ) : (
+                            <Square className="h-5 w-5 text-muted-foreground/60" />
+                          )}
+                        </button>
+                      )}
 
-                      <h3 className="text-base font-bold text-foreground">
-                        {rel.name}
-                      </h3>
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            rel.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25' :
+                            rel.status === 'Partially Rejected' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' :
+                            'bg-blue-500/15 text-blue-400 border border-blue-500/25'
+                          }`}>
+                            {rel.status}
+                          </span>
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Calendar className="h-3 w-3" />
+                            Release Date: <strong className="text-foreground">{rel.releaseDate}</strong>
+                          </span>
+                        </div>
 
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
-                        <span>Includes <strong className="text-foreground">{total}</strong> project changes</span>
-                        <span>&bull;</span>
-                        <span className="text-emerald-400 font-semibold">{completed} passed</span>
-                        {rejected > 0 && (
-                          <>
-                            <span>&bull;</span>
-                            <span className="text-rose-400 font-semibold">{rejected} rejected</span>
-                          </>
-                        )}
-                        <span>&bull;</span>
-                        <span>Created by {rel.createdByName}</span>
+                        <h3 className="text-base font-bold text-foreground">
+                          {rel.name}
+                        </h3>
+
+                        <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                          <span>Includes <strong className="text-foreground">{total}</strong> project changes</span>
+                          <span>&bull;</span>
+                          <span className="text-emerald-400 font-semibold">{completed} passed</span>
+                          {rejected > 0 && (
+                            <>
+                              <span>&bull;</span>
+                              <span className="text-rose-400 font-semibold">{rejected} rejected</span>
+                            </>
+                          )}
+                          <span>&bull;</span>
+                          <span>Created by {rel.createdByName}</span>
+                        </div>
                       </div>
                     </div>
 
@@ -500,6 +647,18 @@ export default function ChangeChecklistsPage() {
                         <span>Verify in QA</span>
                         <ChevronRight className="h-4 w-4" />
                       </button>
+
+                      {/* Individual Delete Action for completed release */}
+                      {isCompleted && isReleaseManager && (
+                        <button
+                          type="button"
+                          onClick={() => openIndividualDelete(rel)}
+                          className="p-2 rounded-xl text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/25 transition-all cursor-pointer"
+                          title="Archive & Delete Completed Release"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -519,11 +678,25 @@ export default function ChangeChecklistsPage() {
             />
           ) : (
             <div className="space-y-4">
-              <div className="p-4 rounded-2xl glass-panel bg-card/60 border border-card-border">
-                <h3 className="text-sm font-bold text-foreground">Select a Production Release to Verify</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Choose an active release to review each developer's implemented changes and execute point-wise verification.
-                </p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-2xl glass-panel bg-card/60 border border-card-border gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-foreground">Select a Production Release to Verify</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Choose an active release to review each developer's implemented changes and execute point-wise verification.
+                  </p>
+                </div>
+
+                {isReleaseManager && completedReleases.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={openDeleteAllCompleted}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/25 text-xs font-bold transition-all cursor-pointer shrink-0"
+                    title="Archive and purge all completed release records"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Delete All Completed ({completedReleases.length})</span>
+                  </button>
+                )}
               </div>
 
               {releases.length === 0 ? (
@@ -532,35 +705,59 @@ export default function ChangeChecklistsPage() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {releases.map((rel) => (
-                    <div
-                      key={rel.id}
-                      onClick={() => setActiveVerificationRelease(rel)}
-                      className="glass-panel p-5 rounded-2xl border border-card-border bg-card/60 hover:bg-accent/25 transition-all cursor-pointer space-y-3"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          rel.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25' :
-                          rel.status === 'Partially Rejected' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' :
-                          'bg-blue-500/15 text-blue-400 border border-blue-500/25'
-                        }`}>
-                          {rel.status}
-                        </span>
-                        <span className="text-xs text-muted-foreground">{rel.releaseDate}</span>
-                      </div>
+                  {releases.map((rel) => {
+                    const isCompleted = rel.status === 'Completed';
 
-                      <h4 className="text-sm font-bold text-foreground leading-snug">
-                        {rel.name}
-                      </h4>
+                    return (
+                      <div
+                        key={rel.id}
+                        className="glass-panel p-5 rounded-2xl border border-card-border bg-card/60 hover:bg-accent/25 transition-all space-y-3 relative group"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            rel.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25' :
+                            rel.status === 'Partially Rejected' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' :
+                            'bg-blue-500/15 text-blue-400 border border-blue-500/25'
+                          }`}>
+                            {rel.status}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">{rel.releaseDate}</span>
+                            {isCompleted && isReleaseManager && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openIndividualDelete(rel);
+                                }}
+                                className="p-1 rounded text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                                title="Archive & Delete Completed Release"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
 
-                      <div className="flex items-center justify-between text-xs pt-2 border-t border-card-border/60">
-                        <span className="text-muted-foreground">{rel.items.length} project change(s)</span>
-                        <span className="text-emerald-400 font-bold flex items-center gap-1">
-                          Open QA Checklist &rarr;
-                        </span>
+                        <h4 
+                          onClick={() => setActiveVerificationRelease(rel)}
+                          className="text-sm font-bold text-foreground leading-snug cursor-pointer hover:text-primary transition-colors"
+                        >
+                          {rel.name}
+                        </h4>
+
+                        <div 
+                          onClick={() => setActiveVerificationRelease(rel)}
+                          className="flex items-center justify-between text-xs pt-2 border-t border-card-border/60 cursor-pointer"
+                        >
+                          <span className="text-muted-foreground">{rel.items.length} project change(s)</span>
+                          <span className="text-emerald-400 font-bold flex items-center gap-1">
+                            Open QA Checklist &rarr;
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -603,6 +800,23 @@ export default function ChangeChecklistsPage() {
         onClose={() => setIsCreateReleaseOpen(false)}
         onSuccess={(id) => {
           setActiveTab('releases');
+        }}
+      />
+
+      <DeleteReleaseConfirmationModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          setIsDeleteModalOpen(false);
+          setReleasesToDelete([]);
+          setIsDeleteAllActive(false);
+        }}
+        releasesToDelete={releasesToDelete}
+        isDeleteAll={isDeleteAllActive}
+        onSuccess={(deletedCount) => {
+          setSelectedCompletedReleaseIds(new Set());
+          if (activeVerificationRelease && releasesToDelete.some(r => r.id === activeVerificationRelease.id)) {
+            setActiveVerificationRelease(null);
+          }
         }}
       />
     </div>

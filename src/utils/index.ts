@@ -526,3 +526,27 @@ export function getTodoAgeInfo(createdAt: string): TodoAgeInfo {
     badgeIcon,
   };
 }
+
+/**
+ * Recursively sanitizes any payload before sending to Firestore.
+ * Omits properties whose values are `undefined`, which are rejected by Firestore addDoc / updateDoc.
+ * Preserves false, 0, "", null, and valid objects / arrays.
+ */
+export function sanitizeFirestorePayload<T>(input: T): T {
+  if (input === null || input === undefined) {
+    return input;
+  }
+  if (Array.isArray(input)) {
+    return input.map((item) => sanitizeFirestorePayload(item)) as unknown as T;
+  }
+  if (typeof input === 'object' && !(input instanceof Date)) {
+    const cleanObj: Record<string, any> = {};
+    for (const [key, val] of Object.entries(input)) {
+      if (val !== undefined) {
+        cleanObj[key] = sanitizeFirestorePayload(val);
+      }
+    }
+    return cleanObj as T;
+  }
+  return input;
+}

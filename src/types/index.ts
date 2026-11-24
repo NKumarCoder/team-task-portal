@@ -282,6 +282,23 @@ export interface TodoItem {
 }
 
 // Project Change Checklist & QA Verification System
+export interface ChangeChecklistItem {
+  id: string; // e.g. "item-1" or generated id
+  text: string; // e.g. "TASK-000154 – Supplier response mapping fix"
+  type: 'task' | 'manual';
+  taskId?: string; // Formal Task ID e.g. "TASK-000154"
+  taskDocId?: string; // Firestore task document ID
+  taskTitle?: string;
+  taskStatus?: string;
+  taskModule?: string;
+  taskPriority?: string;
+  status: 'Pending' | 'Completed';
+  completedBy?: string; // Developer email
+  completedByName?: string; // Developer display name
+  completedDate?: string; // ISO string
+  comment?: string; // Developer comment
+}
+
 export interface VerificationChecklistItem {
   id: string; // e.g. "item-1"
   text: string;
@@ -289,6 +306,19 @@ export interface VerificationChecklistItem {
   qaUser?: string;
   qaUserName?: string;
   qaDate?: string;
+  // Preserved task references & developer info from change checklist:
+  type?: 'task' | 'manual';
+  taskId?: string;
+  taskDocId?: string;
+  taskTitle?: string;
+  taskStatus?: string;
+  taskModule?: string;
+  taskPriority?: string;
+  developerCompleted?: boolean;
+  developerCompletedBy?: string;
+  developerCompletedByName?: string;
+  developerCompletedDate?: string;
+  developerComment?: string;
 }
 
 export interface ChangeRejectionRecord {
@@ -314,7 +344,8 @@ export interface ProjectChangeChecklist {
   projectName: string;
   title: string;
   description?: string; // Optional short explanation
-  points: string[]; // Unified Changes / Verification Points
+  items?: ChangeChecklistItem[]; // Unified task-linked and manual points with status and comments
+  points: string[]; // Unified Changes / Verification Points (array of strings for backwards compatibility)
   changes?: string[]; // Backward compatibility fallback
   verificationItems?: VerificationChecklistItem[]; // Backward compatibility fallback
   status: ChangeChecklistStatus;
@@ -357,8 +388,40 @@ export interface ProductionRelease {
   createdDate: string; // ISO String
 }
 
+export interface ReleaseDeletionLog {
+  id?: string;
+  operationId: string;
+  deletedRecordIds: string[];
+  releaseNames: string[];
+  deletedBy: string;
+  deletedByName: string;
+  deletionDate: string; // ISO String
+  recordCount: number;
+  emailRecipients: string[];
+  emailSubject: string;
+  emailMessageId?: string;
+  reason?: string;
+}
+
+// Helper to normalize items from both new and legacy ProjectChangeChecklist records
+export function getChecklistItems(checklist: ProjectChangeChecklist): ChangeChecklistItem[] {
+  if (checklist.items && Array.isArray(checklist.items) && checklist.items.length > 0) {
+    return checklist.items;
+  }
+  const stringPoints = getChecklistPoints(checklist);
+  return stringPoints.map((p, idx) => ({
+    id: `item-${idx + 1}`,
+    text: p,
+    type: 'manual',
+    status: 'Pending'
+  }));
+}
+
 // Helper to normalize points from both new and legacy ProjectChangeChecklist records
 export function getChecklistPoints(checklist: ProjectChangeChecklist): string[] {
+  if (checklist.items && Array.isArray(checklist.items) && checklist.items.length > 0) {
+    return checklist.items.map(it => it.text);
+  }
   if (checklist.points && Array.isArray(checklist.points) && checklist.points.length > 0) {
     return checklist.points;
   }
