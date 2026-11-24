@@ -68,5 +68,15 @@ service cloud.firestore {
     match /todos/{todoId} {
       allow read, write: if isAuthenticated();
     }
+
+    // Project Change Checklists Collection
+    match /projectChangeChecklists/{checklistId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Production Releases Collection
+    match /productionReleases/{releaseId} {
+      allow read, write: if isAuthenticated();
+    }
   }
 }

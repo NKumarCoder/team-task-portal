@@ -11,3 +11,5 @@ export const notificationsCollection = collection(db, 'notifications');
 export const activitiesCollection = collection(db, 'taskActivities');
 export const projectsCollection = collection(db, 'projects');
 export const todosCollection = collection(db, 'todos');
+export const projectChangeChecklistsCollection = collection(db, 'projectChangeChecklists');
+export const productionReleasesCollection = collection(db, 'productionReleases');

@@ -27,9 +27,11 @@ import {
   notificationsCollection,
   activitiesCollection,
   projectsCollection,
-  todosCollection
+  todosCollection,
+  projectChangeChecklistsCollection,
+  productionReleasesCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User } from '../types';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User, ProjectChangeChecklist, ProductionRelease, ReleaseChangeItem, VerificationChecklistItem, ChangeRejectionRecord, getChecklistPoints, getReleaseItemPoints } from '../types';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients } from '../utils';
 import { canTransitionToStatus, isSuperAdminEmail } from '../utils/permissions';
 import { MAX_ASSIGNEES } from '../constants';
@@ -2950,6 +2952,499 @@ class DBService {
       clearTimeout(timer);
       unsubscribe();
     };
+  }
+
+  // ==========================================
+  // PROJECT CHANGE CHECKLIST & QA VERIFICATION
+  // ==========================================
+
+  async getProjectChangeChecklists(): Promise<ProjectChangeChecklist[]> {
+    try {
+      const q = query(projectChangeChecklistsCollection);
+      const queryPromise = getDocs(q).then((snapshot) => {
+        const list: ProjectChangeChecklist[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProjectChangeChecklist);
+        });
+        return list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
+      });
+      return await withTimeout(queryPromise, 3500, []);
+    } catch (err) {
+      console.error("[dbService] Error getting project change checklists:", err);
+      return [];
+    }
+  }
+
+  subscribeProjectChangeChecklists(callback: (checklists: ProjectChangeChecklist[]) => void) {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      callback([]);
+    }, 4000);
+
+    try {
+      unsubscribe = onSnapshot(projectChangeChecklistsCollection, (snapshot) => {
+        clearTimeout(timer);
+        const list: ProjectChangeChecklist[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProjectChangeChecklist);
+        });
+        callback(list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()));
+      }, (error) => {
+        console.error("[dbService] Project change checklists subscription error:", error);
+        clearTimeout(timer);
+        callback([]);
+      });
+    } catch (err) {
+      console.error("[dbService] Subscription setup failed for checklists:", err);
+      clearTimeout(timer);
+      callback([]);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
+
+  async createProjectChangeChecklist(
+    data: Omit<ProjectChangeChecklist, 'id' | 'status' | 'createdDate' | 'updatedDate'>
+  ): Promise<string> {
+    const now = new Date().toISOString();
+    const cleanPoints = data.points && Array.isArray(data.points)
+      ? data.points.map(p => p.trim()).filter(Boolean)
+      : (data.changes || []).map(p => p.trim()).filter(Boolean);
+
+    const payload: Omit<ProjectChangeChecklist, 'id'> = {
+      projectId: data.projectId,
+      projectName: data.projectName,
+      title: data.title.trim(),
+      description: data.description ? data.description.trim() : '',
+      points: cleanPoints,
+      // Backward compatibility fields
+      changes: cleanPoints,
+      verificationItems: cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      status: 'Available for Release',
+      createdBy: data.createdBy,
+      createdByName: data.createdByName,
+      createdDate: now,
+      updatedDate: now,
+      currentReleaseId: null,
+      currentReleaseName: null,
+      rejectionHistory: []
+    };
+
+    const docRef = await addDoc(projectChangeChecklistsCollection, payload);
+    return docRef.id;
+  }
+
+  async updateProjectChangeChecklist(
+    id: string,
+    updates: Partial<ProjectChangeChecklist>
+  ): Promise<void> {
+    const docRef = doc(db, 'projectChangeChecklists', id);
+    const payload: any = {
+      ...updates,
+      updatedDate: new Date().toISOString()
+    };
+    if (updates.points && Array.isArray(updates.points)) {
+      const cleanPoints = updates.points.map(p => p.trim()).filter(Boolean);
+      payload.points = cleanPoints;
+      payload.changes = cleanPoints;
+      payload.verificationItems = cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' }));
+    }
+    await updateDoc(docRef, payload);
+  }
+
+  async deleteProjectChangeChecklist(id: string): Promise<void> {
+    const docRef = doc(db, 'projectChangeChecklists', id);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      throw new Error("Change checklist not found.");
+    }
+
+    const data = snap.data() as ProjectChangeChecklist;
+    // Strict safeguard: allow deletion ONLY if unreleased and never included in a release
+    const hasReleaseHistory = (data.rejectionHistory && data.rejectionHistory.length > 0) || Boolean(data.currentReleaseId);
+    if (data.status === 'Included in Release' || data.status === 'Completed' || hasReleaseHistory) {
+      throw new Error("Cannot delete: This change is part of a production release or has release history. Deletion is only allowed for unreleased entries.");
+    }
+
+    await deleteDoc(docRef);
+  }
+
+  async addChangePoint(checklistId: string, pointText: string): Promise<string[]> {
+    const cleanText = pointText.trim();
+    if (!cleanText) throw new Error("Point text cannot be empty.");
+
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentPoints = getChecklistPoints(data);
+    const updatedPoints = [...currentPoints, cleanText];
+
+    await updateDoc(docRef, {
+      points: updatedPoints,
+      changes: updatedPoints,
+      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      updatedDate: new Date().toISOString()
+    });
+
+    return updatedPoints;
+  }
+
+  async updateChangePoint(checklistId: string, pointIndex: number, newText: string): Promise<string[]> {
+    const cleanText = newText.trim();
+    if (!cleanText) throw new Error("Point text cannot be empty.");
+
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentPoints = getChecklistPoints(data);
+    if (pointIndex < 0 || pointIndex >= currentPoints.length) {
+      throw new Error("Invalid point index.");
+    }
+
+    const updatedPoints = [...currentPoints];
+    updatedPoints[pointIndex] = cleanText;
+
+    await updateDoc(docRef, {
+      points: updatedPoints,
+      changes: updatedPoints,
+      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      updatedDate: new Date().toISOString()
+    });
+
+    return updatedPoints;
+  }
+
+  async deleteChangePoint(checklistId: string, pointIndex: number): Promise<string[]> {
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentPoints = getChecklistPoints(data);
+    if (currentPoints.length <= 1) {
+      throw new Error("A change checklist must have at least one point.");
+    }
+    if (pointIndex < 0 || pointIndex >= currentPoints.length) {
+      throw new Error("Invalid point index.");
+    }
+
+    const updatedPoints = currentPoints.filter((_, idx) => idx !== pointIndex);
+
+    await updateDoc(docRef, {
+      points: updatedPoints,
+      changes: updatedPoints,
+      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      updatedDate: new Date().toISOString()
+    });
+
+    return updatedPoints;
+  }
+
+  async reopenRejectedChangeChecklist(
+    id: string,
+    updates: {
+      title?: string;
+      description?: string;
+      points?: string[];
+      changes?: string[];
+      verificationItems?: VerificationChecklistItem[];
+    }
+  ): Promise<void> {
+    const docRef = doc(db, 'projectChangeChecklists', id);
+    const cleanPoints = updates.points || updates.changes || [];
+    await updateDoc(docRef, {
+      ...updates,
+      points: cleanPoints,
+      changes: cleanPoints,
+      verificationItems: cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      status: 'Available for Release',
+      currentReleaseId: null,
+      currentReleaseName: null,
+      updatedDate: new Date().toISOString()
+    });
+  }
+
+  async getProductionReleases(): Promise<ProductionRelease[]> {
+    try {
+      const q = query(productionReleasesCollection);
+      const queryPromise = getDocs(q).then((snapshot) => {
+        const list: ProductionRelease[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProductionRelease);
+        });
+        return list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
+      });
+      return await withTimeout(queryPromise, 3500, []);
+    } catch (err) {
+      console.error("[dbService] Error getting production releases:", err);
+      return [];
+    }
+  }
+
+  subscribeProductionReleases(callback: (releases: ProductionRelease[]) => void) {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      callback([]);
+    }, 4000);
+
+    try {
+      unsubscribe = onSnapshot(productionReleasesCollection, (snapshot) => {
+        clearTimeout(timer);
+        const list: ProductionRelease[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProductionRelease);
+        });
+        callback(list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()));
+      }, (error) => {
+        console.error("[dbService] Production releases subscription error:", error);
+        clearTimeout(timer);
+        callback([]);
+      });
+    } catch (err) {
+      console.error("[dbService] Subscription setup failed for production releases:", err);
+      clearTimeout(timer);
+      callback([]);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
+
+  async createProductionRelease(data: {
+    name: string;
+    releaseDate: string;
+    changeChecklistIds: string[];
+    createdBy: string;
+    createdByName: string;
+  }): Promise<string> {
+    // 1. Fetch the selected change checklists to build an authoritative snapshot
+    const allChecklists = await this.getProjectChangeChecklists();
+    const selected = allChecklists.filter(c => c.id && data.changeChecklistIds.includes(c.id));
+
+    if (selected.length === 0) {
+      throw new Error("Please select at least one available project change.");
+    }
+
+    const now = new Date().toISOString();
+
+    const items: ReleaseChangeItem[] = selected.map(c => {
+      const commonPoints = getChecklistPoints(c);
+      const verificationList: VerificationChecklistItem[] = commonPoints.map((p, idx) => ({
+        id: `p-${idx + 1}`,
+        text: p,
+        status: 'Pending'
+      }));
+
+      return {
+        changeChecklistId: c.id!,
+        title: c.title,
+        description: c.description || '',
+        projectId: c.projectId,
+        projectName: c.projectName,
+        developerEmail: c.createdBy,
+        developerName: c.createdByName,
+        points: verificationList,
+        // Backward compatibility
+        changes: commonPoints,
+        verificationItems: verificationList,
+        status: 'Pending QA'
+      };
+    });
+
+    const releasePayload: Omit<ProductionRelease, 'id'> = {
+      name: data.name.trim(),
+      releaseDate: data.releaseDate,
+      status: 'In QA',
+      changeChecklistIds: data.changeChecklistIds,
+      items,
+      createdBy: data.createdBy,
+      createdByName: data.createdByName,
+      createdDate: now
+    };
+
+    // 2. Add release document
+    const releaseDocRef = await addDoc(productionReleasesCollection, releasePayload);
+    const releaseId = releaseDocRef.id;
+
+    // 3. Update all selected change checklists to 'Included in Release'
+    const batch = writeBatch(db);
+    for (const c of selected) {
+      const checklistDoc = doc(db, 'projectChangeChecklists', c.id!);
+      batch.update(checklistDoc, {
+        status: 'Included in Release',
+        currentReleaseId: releaseId,
+        currentReleaseName: data.name.trim(),
+        updatedDate: now
+      });
+    }
+    await batch.commit();
+
+    return releaseId;
+  }
+
+  async updateReleaseItemVerification(
+    releaseId: string,
+    checklistId: string,
+    itemId: string,
+    status: 'Pending' | 'Passed' | 'Failed',
+    qaUser?: string,
+    qaUserName?: string
+  ): Promise<void> {
+    const releaseRef = doc(db, 'productionReleases', releaseId);
+    const releaseSnap = await getDoc(releaseRef);
+    if (!releaseSnap.exists()) throw new Error("Release not found");
+
+    const releaseData = releaseSnap.data() as ProductionRelease;
+    const items = [...releaseData.items];
+    const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
+
+    if (targetItemIndex === -1) throw new Error("Change item not found in release");
+
+    const targetItem = { ...items[targetItemIndex] };
+    const now = new Date().toISOString();
+    const currentPoints = getReleaseItemPoints(targetItem);
+
+    const updatedPoints = currentPoints.map(v => 
+      v.id === itemId 
+        ? { 
+            ...v, 
+            status, 
+            qaUser: qaUser || v.qaUser, 
+            qaUserName: qaUserName || v.qaUserName, 
+            qaDate: status !== 'Pending' ? now : undefined 
+          } 
+        : v
+    );
+
+    targetItem.points = updatedPoints;
+    targetItem.verificationItems = updatedPoints;
+
+    items[targetItemIndex] = targetItem;
+    await updateDoc(releaseRef, { items });
+  }
+
+  async completeReleaseChangeItem(
+    releaseId: string,
+    checklistId: string,
+    qaUser: string,
+    qaUserName: string
+  ): Promise<void> {
+    const releaseRef = doc(db, 'productionReleases', releaseId);
+    const releaseSnap = await getDoc(releaseRef);
+    if (!releaseSnap.exists()) throw new Error("Release not found");
+
+    const releaseData = releaseSnap.data() as ProductionRelease;
+    const items = [...releaseData.items];
+    const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
+
+    if (targetItemIndex === -1) throw new Error("Change item not found in release");
+
+    const targetItem = { ...items[targetItemIndex] };
+    const currentPoints = getReleaseItemPoints(targetItem);
+    const hasUnpassed = currentPoints.some(v => v.status !== 'Passed');
+    if (hasUnpassed) {
+      throw new Error("All verification points must be marked 'Passed' before completing.");
+    }
+
+    const now = new Date().toISOString();
+    targetItem.status = 'Completed';
+    targetItem.qaUser = qaUser;
+    targetItem.qaUserName = qaUserName;
+    targetItem.qaDate = now;
+
+    items[targetItemIndex] = targetItem;
+
+    // Check if entire release is completed
+    const allCompleted = items.every(it => it.status === 'Completed');
+    const hasRejected = items.some(it => it.status === 'Rejected');
+    const newReleaseStatus: 'In QA' | 'Completed' | 'Partially Rejected' = allCompleted
+      ? 'Completed'
+      : hasRejected && items.every(it => it.status !== 'Pending QA')
+      ? 'Partially Rejected'
+      : releaseData.status;
+
+    await updateDoc(releaseRef, { items, status: newReleaseStatus });
+
+    // Update the underlying change checklist
+    const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
+    await updateDoc(checklistRef, {
+      status: 'Completed',
+      updatedDate: now
+    });
+  }
+
+  async rejectReleaseChangeItem(
+    releaseId: string,
+    checklistId: string,
+    reason: string,
+    qaUser: string,
+    qaUserName: string,
+    failedPointIndex?: number,
+    failedPointText?: string
+  ): Promise<void> {
+    if (!reason || !reason.trim()) {
+      throw new Error("A rejection reason is mandatory.");
+    }
+
+    const releaseRef = doc(db, 'productionReleases', releaseId);
+    const releaseSnap = await getDoc(releaseRef);
+    if (!releaseSnap.exists()) throw new Error("Release not found");
+
+    const releaseData = releaseSnap.data() as ProductionRelease;
+    const items = [...releaseData.items];
+    const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
+
+    if (targetItemIndex === -1) throw new Error("Change item not found in release");
+
+    const targetItem = { ...items[targetItemIndex] };
+    const now = new Date().toISOString();
+
+    targetItem.status = 'Rejected';
+    targetItem.rejectionReason = reason.trim();
+    targetItem.qaUser = qaUser;
+    targetItem.qaUserName = qaUserName;
+    targetItem.qaDate = now;
+
+    items[targetItemIndex] = targetItem;
+
+    // Update release status
+    const allDecided = items.every(it => it.status !== 'Pending QA');
+    const newReleaseStatus = allDecided ? 'Partially Rejected' : 'In QA';
+
+    await updateDoc(releaseRef, { items, status: newReleaseStatus });
+
+    // Update underlying change checklist and preserve rejection history
+    const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
+    const checklistSnap = await getDoc(checklistRef);
+    const existingHistory = checklistSnap.exists() && checklistSnap.data().rejectionHistory 
+      ? checklistSnap.data().rejectionHistory 
+      : [];
+
+    const rejectionRecord: ChangeRejectionRecord = {
+      releaseId,
+      releaseName: releaseData.name,
+      rejectedBy: qaUser,
+      rejectedByName: qaUserName,
+      rejectedDate: now,
+      reason: reason.trim(),
+      ...(failedPointIndex !== undefined ? { failedPointIndex } : {}),
+      ...(failedPointText ? { failedPointText } : {})
+    };
+
+    await updateDoc(checklistRef, {
+      status: 'Rejected by QA',
+      rejectionHistory: [...existingHistory, rejectionRecord],
+      updatedDate: now
+    });
   }
 }
 

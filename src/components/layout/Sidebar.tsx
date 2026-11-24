@@ -17,7 +17,8 @@ import {
   Folder,
   Activity,
   UserCheck,
-  GitCompare
+  GitCompare,
+  ListChecks
 } from 'lucide-react';
 import { cn } from '@/utils';
 
@@ -67,6 +68,7 @@ export default function Sidebar({ className, onClose }: SidebarProps) {
         items: [
           { name: 'Kanban Board', href: '/dashboard/kanban', icon: FolderKanban },
           { name: 'Calendar View', href: '/dashboard/calendar', icon: Calendar },
+          { name: 'Change Checklist', href: '/dashboard/change-checklists', icon: ListChecks },
           ...(!isEmployee ? [
             { name: 'Team Workload', href: '/dashboard/workload', icon: Activity },
           ] : [])
