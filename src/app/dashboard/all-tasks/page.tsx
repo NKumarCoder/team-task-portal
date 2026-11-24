@@ -9,7 +9,8 @@ import {
   getPaginationRowModel,
   flexRender,
   ColumnDef,
-  SortingState
+  SortingState,
+  PaginationState
 } from '@tanstack/react-table';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
@@ -19,6 +20,7 @@ import PriorityBadge from '@/components/tasks/PriorityBadge';
 import IssueTypeBadge from '@/components/tasks/IssueTypeBadge';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
+import PaginationControls from '@/components/ui/PaginationControls';
 import { ISSUE_TYPES } from '@/constants';
 import {
   Search,
@@ -60,6 +62,10 @@ export default function AllTasksPage() {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'createdDate', desc: true }
   ]);
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: 10,
+  });
   const [globalFilter, setGlobalFilter] = useState('');
 
   // Extended Advanced Filters States
@@ -110,9 +116,9 @@ export default function AllTasksPage() {
     } catch {}
   };
 
-  async function loadTasks() {
+  async function loadTasks(isBackground = false) {
     console.log("[All Tasks] Fetching task directory list...");
-    setLoading(true);
+    if (!isBackground) setLoading(true);
     try {
       const fetchedTasks = await dbService.getTasks();
       console.log("[All Tasks] Tasks directory loaded successfully, count:", fetchedTasks.length);
@@ -122,11 +128,11 @@ export default function AllTasksPage() {
       console.error('[All Tasks] Error:', error);
       toast.error('Failed to retrieve task roster.');
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
-  // Real-time task syncing
+  // Real-time task syncing (background streaming preserves table mount & page state)
   useEffect(() => {
     setLoading(true);
     const unsubscribe = dbService.subscribeTasks((fetched) => {
@@ -136,14 +142,17 @@ export default function AllTasksPage() {
     return () => unsubscribe();
   }, []);
 
-  // Load data & register updates listener
+  // Load data & register updates listener without unmounting table
   useEffect(() => {
     loadTasks();
     if (typeof window !== 'undefined') {
-      window.addEventListener('task-updated', loadTasks);
+      const handleTaskUpdated = () => {
+        loadTasks(true);
+      };
+      window.addEventListener('task-updated', handleTaskUpdated);
       window.addEventListener('comments-updated', loadCommentsMap);
       return () => {
-        window.removeEventListener('task-updated', loadTasks);
+        window.removeEventListener('task-updated', handleTaskUpdated);
         window.removeEventListener('comments-updated', loadCommentsMap);
       };
     }
@@ -713,24 +722,34 @@ export default function AllTasksPage() {
     [isManager]
   );
 
-  // Table Configuration
+  // Table Configuration with controlled pagination and disabled autoResetPageIndex
   const table = useReactTable({
     data: filteredTasks,
     columns,
     state: {
       sorting,
+      pagination,
     },
     onSortingChange: setSorting,
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    initialState: {
-      pagination: {
-        pageSize: 10,
-      }
-    }
   });
+
+  // Clamping: Ensure pageIndex never genuinely exceeds max valid page count
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / pagination.pageSize));
+  useEffect(() => {
+    const maxPageIndex = pageCount - 1;
+    if (pagination.pageIndex > maxPageIndex) {
+      setPagination(prev => ({
+        ...prev,
+        pageIndex: Math.max(0, maxPageIndex),
+      }));
+    }
+  }, [pageCount, pagination.pageIndex]);
 
   const clearFilters = () => {
     setFilterTaskId('');
@@ -750,6 +769,7 @@ export default function AllTasksPage() {
     setFilterLive(false);
     setFilterCritical(false);
     setFilterBlocked(false);
+    setPagination(prev => ({ ...prev, pageIndex: 0 }));
   };
 
   const getProjectColors = (name: string) => {
@@ -1345,51 +1365,15 @@ export default function AllTasksPage() {
               </table>
             </div>
 
-            {/* Pagination controls with clear safe area */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3.5 bg-card/40 border border-card-border rounded-xl backdrop-blur-md select-none pr-4 md:pr-24">
-              <span className="text-xs text-muted-foreground font-medium">
-                Page {table.getState().pagination.pageIndex + 1} of {Math.max(1, table.getPageCount())} ({filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'} matching)
-              </span>
-              
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => table.previousPage()}
-                  disabled={!table.getCanPreviousPage()}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg bg-card/60 hover:bg-accent/50 text-xs font-semibold text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none transition-all shadow-sm"
-                  title="Previous Page"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">Previous</span>
-                </button>
-
-                {/* Interactive Page Number Buttons */}
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: Math.max(1, table.getPageCount()) }).map((_, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => table.setPageIndex(idx)}
-                      className={`w-7 h-7 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                        table.getState().pagination.pageIndex === idx
-                          ? 'bg-primary text-white shadow-md shadow-primary/25'
-                          : 'bg-card/40 hover:bg-accent/40 text-muted-foreground hover:text-foreground border border-border/50'
-                      }`}
-                    >
-                      {idx + 1}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => table.nextPage()}
-                  disabled={!table.getCanNextPage()}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg bg-card/60 hover:bg-accent/50 text-xs font-semibold text-muted-foreground hover:text-foreground cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none transition-all shadow-sm"
-                  title="Next Page"
-                >
-                  <span className="hidden sm:inline">Next</span>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
+            {/* Pagination Controls */}
+            <PaginationControls
+              currentPage={table.getState().pagination.pageIndex}
+              pageCount={table.getPageCount()}
+              totalItems={filteredTasks.length}
+              onPageChange={(pageIndex) => table.setPageIndex(pageIndex)}
+              canPreviousPage={table.getCanPreviousPage()}
+              canNextPage={table.getCanNextPage()}
+            />
           </div>
         ) : (
           /* Empty State */

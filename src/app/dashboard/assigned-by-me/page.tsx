@@ -9,7 +9,8 @@ import {
   getPaginationRowModel,
   flexRender,
   ColumnDef,
-  SortingState
+  SortingState,
+  PaginationState
 } from '@tanstack/react-table';
 import { useAuth } from '@/hooks/useAuth';
 import { dbService } from '@/services/dbService';
@@ -19,6 +20,7 @@ import PriorityBadge from '@/components/tasks/PriorityBadge';
 import TaskCard from '@/components/tasks/TaskCard';
 import TaskDetailDrawer from '@/components/tasks/TaskDetailDrawer';
 import CreateTaskDialog from '@/components/tasks/CreateTaskDialog';
+import PaginationControls from '@/components/ui/PaginationControls';
 import {
   Search,
   ArrowUpDown,
@@ -64,6 +66,10 @@ export default function AssignedByMePage() {
 
   // Table Sorting & Global Search
   const [sorting, setSorting] = useState<SortingState>([]);
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: 10,
+  });
   const [globalFilter, setGlobalFilter] = useState('');
 
   // Extended Filter States
@@ -330,6 +336,7 @@ export default function AssignedByMePage() {
     setFilterStatus('all');
     setFilterPriority('all');
     setFilterDueDate('');
+    setPagination(prev => ({ ...prev, pageIndex: 0 }));
   };
 
   const hasActiveFilters =
@@ -520,24 +527,34 @@ export default function AssignedByMePage() {
     [isManager]
   );
 
-  // TanStack Table Instance
+  // TanStack Table Instance with controlled pagination and disabled autoResetPageIndex
   const table = useReactTable({
     data: filteredTasks,
     columns,
     state: {
       sorting,
+      pagination,
     },
     onSortingChange: setSorting,
+    onPaginationChange: setPagination,
+    autoResetPageIndex: false,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    initialState: {
-      pagination: {
-        pageSize: 10,
-      },
-    },
   });
+
+  // Clamping: Ensure pageIndex never genuinely exceeds max valid page count
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / pagination.pageSize));
+  useEffect(() => {
+    const maxPageIndex = pageCount - 1;
+    if (pagination.pageIndex > maxPageIndex) {
+      setPagination(prev => ({
+        ...prev,
+        pageIndex: Math.max(0, maxPageIndex),
+      }));
+    }
+  }, [pageCount, pagination.pageIndex]);
 
   return (
     <div className="space-y-6 select-none">
@@ -887,31 +904,15 @@ export default function AssignedByMePage() {
             </div>
 
             {/* Pagination Controls */}
-            <div className="p-4 border-t border-card-border flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground">
-              <div>
-                Showing <strong className="text-foreground">{table.getRowModel().rows.length}</strong> of{' '}
-                <strong className="text-foreground">{filteredTasks.length}</strong> delegated tasks
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => table.previousPage()}
-                  disabled={!table.getCanPreviousPage()}
-                  className="px-3 py-1.5 rounded-lg border border-card-border bg-accent/30 hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors font-semibold"
-                >
-                  Previous
-                </button>
-                <span className="font-semibold text-foreground px-1">
-                  Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount() || 1}
-                </span>
-                <button
-                  onClick={() => table.nextPage()}
-                  disabled={!table.getCanNextPage()}
-                  className="px-3 py-1.5 rounded-lg border border-card-border bg-accent/30 hover:bg-accent/60 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors font-semibold"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
+            <PaginationControls
+              currentPage={table.getState().pagination.pageIndex}
+              pageCount={table.getPageCount()}
+              totalItems={filteredTasks.length}
+              onPageChange={(pageIndex) => table.setPageIndex(pageIndex)}
+              canPreviousPage={table.getCanPreviousPage()}
+              canNextPage={table.getCanNextPage()}
+              itemLabel="delegated task"
+            />
           </div>
         ) : (
           /* Cards Grid View grouped by priority */

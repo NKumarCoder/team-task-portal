@@ -9,13 +9,12 @@ import { useAuth } from '@/hooks/useAuth';
 import { Loader2, Plus, AlertCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Task } from '@/types';
+import { cn } from '@/utils';
+import { NavigationLayoutProvider, useNavigationLayout } from '@/components/layout/NavigationLayoutContext';
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
+  const { layoutMode, isSidebarCollapsed } = useNavigationLayout();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [timeoutError, setTimeoutError] = useState(false);
@@ -93,11 +92,18 @@ export default function DashboardLayout({
       <div className="bg-glow-purple -top-40 -left-40 opacity-70 dark:opacity-100" />
       <div className="bg-glow-blue -bottom-40 -right-40 opacity-70 dark:opacity-100" />
 
-      {/* Desktop Sidebar (Left Panel) */}
-      <Sidebar className="hidden lg:flex fixed left-0 top-0 bottom-0 z-20" />
+      {/* Desktop Left Sidebar - Only rendered and visible when Left Sidebar mode is active */}
+      {layoutMode === 'sidebar' && (
+        <Sidebar className="hidden lg:flex fixed left-0 top-0 bottom-0 z-30" />
+      )}
 
-      {/* Main Panel wrapper */}
-      <div className="flex-1 flex flex-col lg:pl-64 min-h-screen relative z-10 min-w-0 overflow-hidden">
+      {/* Main Panel wrapper - Dynamically adapts width & padding to layout mode and sidebar state */}
+      <div
+        className={cn(
+          "flex-1 flex flex-col min-h-screen relative z-10 min-w-0 w-full transition-all duration-300 ease-in-out",
+          layoutMode === 'sidebar' && (isSidebarCollapsed ? "lg:pl-16" : "lg:pl-64")
+        )}
+      >
         <Navbar onMenuClick={() => setMobileOpen(true)} />
         
         {/* Main Content Area */}
@@ -127,5 +133,17 @@ export default function DashboardLayout({
         onSuccess={handleTaskCreated}
       />
     </div>
+  );
+}
+
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <NavigationLayoutProvider>
+      <DashboardLayoutContent>{children}</DashboardLayoutContent>
+    </NavigationLayoutProvider>
   );
 }

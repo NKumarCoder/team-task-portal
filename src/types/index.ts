@@ -173,6 +173,8 @@ export interface Attachment {
 export interface MentionData {
   userId: string; // member email or UID
   userName: string; // member display name
+  userEmail?: string;
+  uid?: string;
 }
 
 export interface Comment {
@@ -189,6 +191,7 @@ export interface Comment {
   timestamp: string; // ISO String
   edited?: boolean;
   editedAt?: string;
+  autoAssignedMembers?: Member[];
 }
 
 export interface ActivityLog {
@@ -276,4 +279,112 @@ export interface TodoItem {
   updatedAt: string; // ISO Date String
   convertedToTaskId?: string; // Formal Task ID e.g. "TASK-000012"
   convertedAt?: string; // ISO Date String
+}
+
+// Project Change Checklist & QA Verification System
+export interface VerificationChecklistItem {
+  id: string; // e.g. "item-1"
+  text: string;
+  status: 'Pending' | 'Passed' | 'Failed';
+  qaUser?: string;
+  qaUserName?: string;
+  qaDate?: string;
+}
+
+export interface ChangeRejectionRecord {
+  releaseId: string;
+  releaseName: string;
+  rejectedBy: string; // Email
+  rejectedByName: string; // Display name
+  rejectedDate: string; // ISO string
+  reason: string; // Mandatory explanation of failure
+  failedPointIndex?: number; // Optional index of the specific failed point
+  failedPointText?: string; // Optional text of the failed point
+}
+
+export type ChangeChecklistStatus = 
+  | 'Available for Release'
+  | 'Included in Release'
+  | 'Rejected by QA'
+  | 'Completed';
+
+export interface ProjectChangeChecklist {
+  id?: string;
+  projectId: string; // Selected existing project ID
+  projectName: string;
+  title: string;
+  description?: string; // Optional short explanation
+  points: string[]; // Unified Changes / Verification Points
+  changes?: string[]; // Backward compatibility fallback
+  verificationItems?: VerificationChecklistItem[]; // Backward compatibility fallback
+  status: ChangeChecklistStatus;
+  createdBy: string; // Developer Email
+  createdByName: string;
+  createdDate: string; // ISO String
+  updatedDate: string; // ISO String
+  currentReleaseId?: string | null;
+  currentReleaseName?: string | null;
+  rejectionHistory?: ChangeRejectionRecord[];
+}
+
+export interface ReleaseChangeItem {
+  changeChecklistId: string;
+  title: string;
+  description?: string;
+  projectId: string;
+  projectName: string;
+  developerEmail: string;
+  developerName: string;
+  points: VerificationChecklistItem[]; // Unified snapshot of change points with QA status
+  changes?: string[]; // Backward compatibility
+  verificationItems?: VerificationChecklistItem[]; // Backward compatibility
+  status: 'Pending QA' | 'Completed' | 'Rejected';
+  qaUser?: string;
+  qaUserName?: string;
+  qaDate?: string;
+  rejectionReason?: string;
+}
+
+export interface ProductionRelease {
+  id?: string;
+  name: string; // e.g. "Production Release – 24 November 2026"
+  releaseDate: string; // YYYY-MM-DD
+  status: 'In QA' | 'Completed' | 'Partially Rejected';
+  changeChecklistIds: string[];
+  items: ReleaseChangeItem[];
+  createdBy: string;
+  createdByName: string;
+  createdDate: string; // ISO String
+}
+
+// Helper to normalize points from both new and legacy ProjectChangeChecklist records
+export function getChecklistPoints(checklist: ProjectChangeChecklist): string[] {
+  if (checklist.points && Array.isArray(checklist.points) && checklist.points.length > 0) {
+    return checklist.points;
+  }
+  if (checklist.changes && Array.isArray(checklist.changes) && checklist.changes.length > 0) {
+    return checklist.changes;
+  }
+  if (checklist.verificationItems && Array.isArray(checklist.verificationItems) && checklist.verificationItems.length > 0) {
+    return checklist.verificationItems.map(v => v.text);
+  }
+  return [];
+}
+
+// Helper to normalize points from both new and legacy ReleaseChangeItem records
+export function getReleaseItemPoints(item: ReleaseChangeItem): VerificationChecklistItem[] {
+  if (item.points && Array.isArray(item.points) && item.points.length > 0) {
+    return item.points;
+  }
+  if (item.verificationItems && Array.isArray(item.verificationItems) && item.verificationItems.length > 0) {
+    return item.verificationItems;
+  }
+  if (item.changes && Array.isArray(item.changes) && item.changes.length > 0) {
+    return item.changes.map((ch, idx) => ({
+      id: `legacy-${idx + 1}`,
+      text: ch,
+      status: 'Pending'
+    }));
+  }
+  return [];
 }

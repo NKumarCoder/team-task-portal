@@ -174,11 +174,12 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
   // Mention autocomplete filtered members
   const filteredMentionMembers = useMemo(() => {
     if (mentionQuery === null) return [];
-    const q = mentionQuery.toLowerCase();
-    return members.filter(m =>
-      m.name.toLowerCase().includes(q) ||
-      m.email.toLowerCase().includes(q)
-    ).slice(0, 6);
+    const q = mentionQuery.toLowerCase().trim();
+    return members.filter(m => {
+      const name = (m.name || '').toLowerCase();
+      const email = (m.email || '').toLowerCase();
+      return name.includes(q) || email.includes(q);
+    });
   }, [members, mentionQuery]);
 
   // Handle typing & mention detection
@@ -236,7 +237,9 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
     const lastAtPos = textBeforeCursor.lastIndexOf('@');
 
     if (lastAtPos !== -1) {
-      const mentionTag = `@[${member.name}](${member.email.toLowerCase()}) `;
+      const displayName = (member.name && member.name.trim()) || member.email.split('@')[0];
+      const memberRef = member.email.toLowerCase().trim();
+      const mentionTag = `@[${displayName}](${memberRef}) `;
       const newFullText = textBeforeCursor.slice(0, lastAtPos) + mentionTag + textAfterCursor;
       setText(newFullText);
       setMentionQuery(null);
@@ -250,6 +253,39 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
         }
       }, 50);
     }
+  };
+
+  // Helper to extract structured mention objects from comment content
+  const extractStructuredMentions = (content: string) => {
+    const list: { userId: string; userName: string; userEmail?: string; uid?: string }[] = [];
+    const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
+    let mMatch;
+    while ((mMatch = mentionRegex.exec(content)) !== null) {
+      const rawName = mMatch[1].trim();
+      const rawRef = mMatch[2].toLowerCase().trim();
+      const foundMember = members.find(
+        (m) =>
+          (m.email && m.email.toLowerCase() === rawRef) ||
+          m.uid === rawRef ||
+          m.id === rawRef
+      );
+
+      if (foundMember) {
+        list.push({
+          userId: foundMember.email.toLowerCase(),
+          userName: foundMember.name || rawName,
+          userEmail: foundMember.email.toLowerCase(),
+          uid: foundMember.uid || foundMember.id,
+        });
+      } else {
+        list.push({
+          userId: rawRef,
+          userName: rawName,
+          userEmail: rawRef.includes('@') ? rawRef : undefined,
+        });
+      }
+    }
+    return list;
   };
 
   // Autocomplete keyboard handling
@@ -278,13 +314,15 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
 
     setSubmittingComment(true);
     try {
-      await dbService.addComment(
+      const structuredMentions = extractStructuredMentions(clean);
+      const res = await dbService.addComment(
         {
           taskId: task.id,
           userId: user.email.toLowerCase(),
           userName: user.displayName || user.email.split('@')[0],
           userAvatarColor: (user as any).avatarColor || '#6366f1',
           content: clean,
+          mentions: structuredMentions,
           timestamp: new Date().toISOString()
         },
         task.taskId,
@@ -292,7 +330,17 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
       );
       setNewCommentText('');
       setMentionQuery(null);
-      toast.success('Comment posted');
+
+      // Feedback for auto-co-assignees
+      const autoAssigned = res.autoAssignedMembers || [];
+      if (autoAssigned.length === 1) {
+        toast.success(`Comment posted. ${autoAssigned[0].name} was automatically added as a co-assignee.`);
+      } else if (autoAssigned.length > 1) {
+        const names = autoAssigned.map((m) => m.name).join(' and ');
+        toast.success(`Comment posted. ${names} were added as co-assignees.`);
+      } else {
+        toast.success('Comment posted successfully.');
+      }
     } catch (err: any) {
       console.error('Failed to post comment:', err);
       toast.error('Failed to post comment');
@@ -308,7 +356,8 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
 
     setSubmittingReply(true);
     try {
-      await dbService.addComment(
+      const structuredMentions = extractStructuredMentions(clean);
+      const res = await dbService.addComment(
         {
           taskId: task.id,
           parentId,
@@ -316,6 +365,7 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
           userName: user.displayName || user.email.split('@')[0],
           userAvatarColor: (user as any).avatarColor || '#6366f1',
           content: clean,
+          mentions: structuredMentions,
           timestamp: new Date().toISOString()
         },
         task.taskId,
@@ -326,7 +376,17 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
       setMentionQuery(null);
       // Auto-expand this parent's replies
       setExpandedReplies(prev => new Set(prev).add(parentId));
-      toast.success('Reply posted');
+
+      // Feedback for auto-co-assignees
+      const autoAssigned = res.autoAssignedMembers || [];
+      if (autoAssigned.length === 1) {
+        toast.success(`Reply posted. ${autoAssigned[0].name} was automatically added as a co-assignee.`);
+      } else if (autoAssigned.length > 1) {
+        const names = autoAssigned.map((m) => m.name).join(' and ');
+        toast.success(`Reply posted. ${names} were added as co-assignees.`);
+      } else {
+        toast.success('Reply posted successfully.');
+      }
     } catch (err) {
       console.error('Failed to post reply:', err);
       toast.error('Failed to post reply');
@@ -381,7 +441,7 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
     }
   };
 
-  // Helper to render comment text with styled @mention chips
+  // Helper to render comment text with styled @mention chips displaying ONLY the user's name
   const renderContentWithMentions = (content: string) => {
     const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
     const elements: React.ReactNode[] = [];
@@ -393,16 +453,39 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
       if (match.index > lastIndex) {
         elements.push(content.substring(lastIndex, match.index));
       }
-      const memberName = match[1];
-      const memberEmail = match[2];
+      const rawName = match[1].trim();
+      const rawRef = match[2].trim().toLowerCase();
+
+      // Look up member to find real full name and email
+      const matchedMember = members.find(
+        (m) =>
+          (m.email && m.email.toLowerCase() === rawRef) ||
+          m.uid === rawRef ||
+          m.id === rawRef ||
+          (m.name && m.name.toLowerCase() === rawName.toLowerCase())
+      );
+
+      // Extract clean display name (strip any embedded "(email)" in legacy formats or email prefixes)
+      let cleanName = rawName;
+      const parenEmailMatch = cleanName.match(/^([^(]+)\s*\([^)]+@[^)]+\)$/);
+      if (parenEmailMatch) {
+        cleanName = parenEmailMatch[1].trim();
+      } else if (cleanName.includes('@')) {
+        cleanName = matchedMember?.name && matchedMember.name !== cleanName
+          ? matchedMember.name
+          : cleanName.split('@')[0];
+      }
+      const displayName = matchedMember?.name || cleanName;
+      const displayEmail = matchedMember?.email || (rawRef.includes('@') ? rawRef : '');
+
       elements.push(
         <span
           key={`mention-${match.index}`}
-          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 mx-0.5 rounded text-xs font-semibold bg-primary/15 text-primary border border-primary/25 select-none"
-          title={`Mentioned: ${memberEmail}`}
+          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 mx-0.5 rounded-md text-xs font-semibold bg-primary/15 text-primary border border-primary/25 select-none"
+          title={displayEmail ? `Mentioned: ${displayName} (${displayEmail})` : `Mentioned: ${displayName}`}
         >
-          <AtSign className="h-2.5 w-2.5" />
-          {memberName}
+          <AtSign className="h-3 w-3 shrink-0" />
+          <span>{displayName}</span>
         </span>
       );
       lastIndex = match.index + match[0].length;
@@ -423,36 +506,59 @@ export default function TaskCommentsSection({ task }: TaskCommentsSectionProps) 
   const renderMentionDropdown = () => {
     if (mentionQuery === null || filteredMentionMembers.length === 0) return null;
     return (
-      <div className="absolute z-50 bottom-full mb-1 left-3 w-64 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-1.5 space-y-1 animate-in fade-in zoom-in-95 duration-150">
+      <div className="absolute z-50 bottom-full mb-2 left-3 w-72 sm:w-80 bg-slate-900/98 backdrop-blur-xl border border-slate-700/80 rounded-xl shadow-2xl p-1.5 space-y-1 animate-in fade-in zoom-in-95 duration-150">
         <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border/40 flex items-center justify-between">
-          <span>Mention Team Member</span>
-          <span className="text-[9px] lowercase font-normal">↑↓ to navigate</span>
+          <span className="flex items-center gap-1.5">
+            <AtSign className="h-3 w-3 text-primary" />
+            Mention Team Member
+          </span>
+          <span className="text-[9px] lowercase font-normal opacity-70">↑↓ navigate &bull; Enter select</span>
         </div>
-        <div className="max-h-48 overflow-y-auto space-y-0.5">
+        <div
+          className="max-h-56 overflow-y-auto space-y-0.5 custom-scrollbar overscroll-contain"
+          onWheel={(e) => e.stopPropagation()}
+        >
           {filteredMentionMembers.map((m, idx) => (
             <button
-              key={m.id || m.email}
+              key={m.email || m.id || `mention-${idx}`}
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault(); // prevent blur
                 applyMention(m);
               }}
-              className={`w-full flex items-center gap-2 p-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${
+              className={`w-full flex items-center justify-between gap-2 p-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${
                 idx === mentionIndex
                   ? 'bg-primary text-primary-foreground font-semibold'
                   : 'hover:bg-slate-800 text-foreground'
               }`}
             >
-              <div
-                className="w-5 h-5 rounded-full flex items-center justify-center font-bold text-white text-[9px] shrink-0"
-                style={{ backgroundColor: m.avatarColor || '#6366f1' }}
-              >
-                {m.name.charAt(0).toUpperCase()}
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center font-bold text-white text-[10px] shrink-0 border border-slate-700"
+                  style={{ backgroundColor: m.avatarColor || '#6366f1' }}
+                >
+                  {(m.name || m.email || 'U').charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1 truncate">
+                  <span className="block truncate font-semibold leading-tight">
+                    {m.name || m.email}
+                  </span>
+                  <span className="block text-[10px] opacity-75 truncate leading-tight">
+                    {m.email}
+                  </span>
+                </div>
               </div>
-              <div className="min-w-0 flex-1 truncate">
-                <span className="block truncate">{m.name}</span>
-                <span className="block text-[10px] opacity-75 truncate">{m.email}</span>
-              </div>
+              {m.role && (
+                <span
+                  className={`text-[9px] px-1.5 py-0.2 rounded font-mono shrink-0 ${
+                    idx === mentionIndex
+                      ? 'bg-primary-foreground/20 text-primary-foreground'
+                      : 'bg-slate-800 text-slate-400 border border-slate-700'
+                  }`}
+                >
+                  {m.role}
+                </span>
+              )}
             </button>
           ))}
         </div>

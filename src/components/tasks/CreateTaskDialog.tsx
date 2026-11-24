@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, Loader2, Check, Copy, AlertTriangle, Bug, CheckSquare, Bookmark, Layers } from 'lucide-react';
+import { deleteField } from 'firebase/firestore';
 import DatePicker from '@/components/ui/DatePicker';
 import MultiAssigneeSelect from '@/components/ui/MultiAssigneeSelect';
 import { useAuth } from '@/hooks/useAuth';
@@ -310,16 +311,14 @@ export default function CreateTaskDialog({
           });
         }
 
-        const taskUpdates: Partial<Task> = {
+        const hasParent = Boolean(values.parentTaskId && values.parentTaskId.trim());
+        const hasQa = Boolean(qaOwnerObj);
+
+        const taskUpdates: any = {
           projectName: values.projectName,
           title: values.title,
           description: values.description,
           issueType: values.issueType,
-          qaOwner: qaOwnerObj,
-          qaOwnerId: qaOwnerObj?.id || '',
-          qaOwnerName: qaOwnerObj?.name || '',
-          parentTaskId: values.parentTaskId || undefined,
-          parentTaskTitle: parentTaskTitle || undefined,
           assignees,
           assigneeIds,
           // Legacy backward-compatibility fields
@@ -337,6 +336,24 @@ export default function CreateTaskDialog({
           statusHistory: newHistory,
         };
 
+        if (hasParent) {
+          taskUpdates.parentTaskId = values.parentTaskId!.trim();
+          taskUpdates.parentTaskTitle = parentTaskTitle || '';
+        } else {
+          taskUpdates.parentTaskId = deleteField();
+          taskUpdates.parentTaskTitle = deleteField();
+        }
+
+        if (hasQa && qaOwnerObj) {
+          taskUpdates.qaOwner = qaOwnerObj;
+          taskUpdates.qaOwnerId = qaOwnerObj.id || '';
+          taskUpdates.qaOwnerName = qaOwnerObj.name || '';
+        } else {
+          taskUpdates.qaOwner = deleteField();
+          taskUpdates.qaOwnerId = deleteField();
+          taskUpdates.qaOwnerName = deleteField();
+        }
+
         await dbService.updateTask(taskToEdit.id!, taskUpdates, user?.email, user?.displayName);
         toast.success('Task updated successfully');
         onSuccess({ ...taskToEdit, ...taskUpdates, updatedDate: new Date().toISOString() });
@@ -352,16 +369,14 @@ export default function CreateTaskDialog({
           }
         ];
 
-        const newTask: Omit<Task, 'id' | 'taskId' | 'isDeleted'> = {
+        const hasParent = Boolean(values.parentTaskId && values.parentTaskId.trim());
+        const hasQa = Boolean(qaOwnerObj);
+
+        const newTask: any = {
           projectName: values.projectName,
           title: values.title,
           description: values.description,
           issueType: values.issueType,
-          qaOwner: qaOwnerObj,
-          qaOwnerId: qaOwnerObj?.id || '',
-          qaOwnerName: qaOwnerObj?.name || '',
-          parentTaskId: values.parentTaskId || undefined,
-          parentTaskTitle: parentTaskTitle || undefined,
           assignees,
           assigneeIds,
           // Legacy backward-compatibility fields
@@ -382,6 +397,17 @@ export default function CreateTaskDialog({
           updatedDate: new Date().toISOString(),
           statusHistory: initialHistory,
         };
+
+        if (hasParent) {
+          newTask.parentTaskId = values.parentTaskId!.trim();
+          newTask.parentTaskTitle = parentTaskTitle || '';
+        }
+
+        if (hasQa && qaOwnerObj) {
+          newTask.qaOwner = qaOwnerObj;
+          newTask.qaOwnerId = qaOwnerObj.id || '';
+          newTask.qaOwnerName = qaOwnerObj.name || '';
+        }
 
         // Convert selected files to base64 attachments
         const attachmentsData = [];
@@ -779,9 +805,9 @@ export default function CreateTaskDialog({
                           {...register('qaOwnerEmail')}
                         >
                           <option value="">Unassigned</option>
-                          {members.filter(m => m.isActive !== false).map(member => (
-                            <option key={member.id} value={member.email}>
-                              {member.name} ({member.email})
+                          {members.filter(m => m.isActive !== false).map((member, idx) => (
+                            <option key={member.email || member.id || `qa-${idx}`} value={member.email}>
+                              {member.name || member.email} ({member.email})
                             </option>
                           ))}
                         </select>

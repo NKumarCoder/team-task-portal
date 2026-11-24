@@ -72,20 +72,20 @@ export default function MultiAssigneeSelect({
 
   // Map of selected members
   const selectedMembers = useMemo(() => {
-    const emailSet = new Set(selectedEmails.map((e) => e.toLowerCase()));
-    return members.filter((m) => emailSet.has(m.email.toLowerCase()));
+    const emailSet = new Set(selectedEmails.map((e) => (e || '').toLowerCase()));
+    return members.filter((m) => m.email && emailSet.has(m.email.toLowerCase()));
   }, [members, selectedEmails]);
 
   // Filtered members based on search
   const filteredMembers = useMemo(() => {
     if (!searchQuery.trim()) return members;
-    const q = searchQuery.toLowerCase();
-    return members.filter(
-      (m) =>
-        m.name.toLowerCase().includes(q) ||
-        m.email.toLowerCase().includes(q) ||
-        (m.role && m.role.toLowerCase().includes(q))
-    );
+    const q = searchQuery.toLowerCase().trim();
+    return members.filter((m) => {
+      const name = (m.name || '').toLowerCase();
+      const email = (m.email || '').toLowerCase();
+      const role = (m.role || '').toLowerCase();
+      return name.includes(q) || email.includes(q) || role.includes(q);
+    });
   }, [members, searchQuery]);
 
   const toggleMember = (email: string) => {
@@ -131,15 +131,15 @@ export default function MultiAssigneeSelect({
                   className="w-3.5 h-3.5 rounded-full flex items-center justify-center font-bold text-white text-[8px] shrink-0"
                   style={{ backgroundColor: member.avatarColor || '#6366f1' }}
                 >
-                  {member.name.charAt(0).toUpperCase()}
+                  {(member.name || member.email || 'U').charAt(0).toUpperCase()}
                 </span>
-                <span className="truncate">{member.name}</span>
+                <span className="truncate">{member.name || member.email}</span>
                 {!disabled && (
                   <button
                     type="button"
                     onClick={(e) => removeMember(e, member.email)}
                     className="text-muted-foreground hover:text-destructive transition-colors ml-0.5 p-0.5 cursor-pointer"
-                    aria-label={`Remove ${member.name}`}
+                    aria-label={`Remove ${member.name || member.email}`}
                   >
                     <X className="h-2.5 w-2.5" />
                   </button>
@@ -185,11 +185,15 @@ export default function MultiAssigneeSelect({
             </div>
 
             {/* Member List */}
-            <div className="max-h-[180px] overflow-y-auto space-y-0.5 pr-1">
+            <div
+              className="max-h-[260px] overflow-y-auto space-y-0.5 pr-1 custom-scrollbar overscroll-contain"
+              onWheel={(e) => e.stopPropagation()}
+            >
               {filteredMembers.length > 0 ? (
                 filteredMembers.map((m, idx) => {
+                  const memberEmail = m.email || '';
                   const isSelected = selectedEmails.some(
-                    (e) => e.toLowerCase() === m.email.toLowerCase()
+                    (e) => (e || '').toLowerCase() === memberEmail.toLowerCase()
                   );
                   return (
                     <div
@@ -206,11 +210,11 @@ export default function MultiAssigneeSelect({
                           className="w-5 h-5 rounded-full flex items-center justify-center font-bold text-white text-[10px] shrink-0 shadow-xs"
                           style={{ backgroundColor: m.avatarColor || '#6366f1' }}
                         >
-                          {m.name.charAt(0).toUpperCase()}
+                          {(m.name || m.email || 'U').charAt(0).toUpperCase()}
                         </span>
                         <div className="min-w-0 truncate">
                           <span className="text-foreground font-medium block truncate text-xs">
-                            {m.name}
+                            {m.name || m.email}
                           </span>
                           <span className="text-[10px] text-muted-foreground block truncate">
                             {m.email}

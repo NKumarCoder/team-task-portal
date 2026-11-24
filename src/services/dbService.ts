@@ -27,9 +27,11 @@ import {
   notificationsCollection,
   activitiesCollection,
   projectsCollection,
-  todosCollection
+  todosCollection,
+  projectChangeChecklistsCollection,
+  productionReleasesCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User } from '../types';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User, ProjectChangeChecklist, ProductionRelease, ReleaseChangeItem, VerificationChecklistItem, ChangeRejectionRecord, getChecklistPoints, getReleaseItemPoints } from '../types';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients } from '../utils';
 import { canTransitionToStatus, isSuperAdminEmail } from '../utils/permissions';
 import { MAX_ASSIGNEES } from '../constants';
@@ -53,6 +55,41 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T
         resolve(fallbackValue);
       });
   });
+}
+
+/**
+ * Recursively removes all undefined properties from an object so Firestore addDoc/updateDoc/setDoc never fails
+ */
+export function removeUndefinedDeep<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+  // If it's a Firestore FieldValue (deleteField(), serverTimestamp(), etc.) or Date, don't mutate
+  if (typeof obj === 'object') {
+    if (obj instanceof Date) return obj;
+    const constructorName = (obj as any)?.constructor?.name;
+    if (
+      constructorName === 'FieldValue' ||
+      constructorName === 'DeleteFieldValue' ||
+      (obj as any)?._methodName !== undefined ||
+      typeof (obj as any)?.isEqual === 'function'
+    ) {
+      return obj;
+    }
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => removeUndefinedDeep(item)) as unknown as T;
+  }
+  if (typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = removeUndefinedDeep(value);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
 }
 
 export interface MailAttachment {
@@ -80,8 +117,21 @@ class DBService {
 
       querySnapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        const member = { ...data, id: docSnap.id } as Member;
-        const key = (member.email || member.uid || docSnap.id).toLowerCase().trim();
+        const rawEmail = (data.email || '').toLowerCase().trim();
+        const rawName = (data.name || data.displayName || data.fullName || (rawEmail ? rawEmail.split('@')[0] : '') || 'Team Member').trim();
+        const member: Member = {
+          ...data,
+          id: docSnap.id,
+          uid: data.uid || docSnap.id,
+          name: rawName,
+          email: rawEmail,
+          role: data.role || 'Member',
+          avatarColor: data.avatarColor || '#3b82f6',
+          isActive: data.isActive !== false,
+          createdDate: data.createdDate || data.createdAt || new Date().toISOString(),
+        };
+
+        const key = rawEmail || data.uid || docSnap.id;
 
         if (!membersMap.has(key)) {
           membersMap.set(key, member);
@@ -91,6 +141,8 @@ class DBService {
           const merged: Member = {
             ...existing,
             ...member,
+            name: member.name || existing.name,
+            email: member.email || existing.email,
             uid: member.uid || existing.uid,
             // Prefer the Auth UID docId if available
             id: (member.uid && docSnap.id === member.uid) ? docSnap.id : existing.id,
@@ -101,16 +153,19 @@ class DBService {
               ? 'Admin'
               : member.role || existing.role || 'Member',
             avatarColor: member.avatarColor || existing.avatarColor,
+            isActive: existing.isActive !== false && member.isActive !== false,
             createdDate: existing.createdDate || member.createdDate,
           };
           membersMap.set(key, merged);
         }
       });
-      return Array.from(membersMap.values());
+      const list = Array.from(membersMap.values());
+      list.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+      return list;
     })();
 
     try {
-      const members = await withTimeout(queryPromise, 3000, []);
+      const members = await withTimeout(queryPromise, 15000, []);
       const end = performance.now();
       console.log(`[dbService] [Firestore] Collection Name: users, Returned Count: ${members.length}, Execution Time: ${(end - start).toFixed(2)}ms`);
       return members;
@@ -262,7 +317,8 @@ class DBService {
       isDeleted: false,
     };
 
-    const docRef = await addDoc(tasksCollection, taskPayload);
+    const cleanedPayload = removeUndefinedDeep(taskPayload);
+    const docRef = await addDoc(tasksCollection, cleanedPayload);
     const end = performance.now();
     console.log(`[dbService] [Firestore] Task added in tasks collection (Execution Time: ${(end - start).toFixed(2)}ms)`);
     
@@ -500,7 +556,8 @@ class DBService {
     }
 
     const taskDoc = doc(db, 'tasks', id);
-    await updateDoc(taskDoc, payload);
+    const cleanedPayload = removeUndefinedDeep(payload);
+    await updateDoc(taskDoc, cleanedPayload);
     const end = performance.now();
     console.log(`[dbService] [Firestore] Collection Name: tasks, Operation: UPDATE, Execution Time: ${(end - start).toFixed(2)}ms`);
     
@@ -1184,21 +1241,12 @@ class DBService {
   }
 
   // --- ADD CO-ASSIGNEE / DELEGATE WORKFLOW ---
-  async addCoAssignee(
+  async addCoAssignees(
     taskId: string,
-    newMember: { id?: string; email?: string; name: string; avatarColor?: string; color?: string; isActive?: boolean },
+    newMembers: Array<{ id?: string; email?: string; name: string; avatarColor?: string; color?: string; isActive?: boolean }>,
     addedBy: string,
     addedByName: string
   ): Promise<Task> {
-    const candidateEmail = (newMember.email || newMember.id || '').toLowerCase().trim();
-    if (!candidateEmail) {
-      throw new Error('Valid member email is required.');
-    }
-
-    if (newMember.isActive === false) {
-      throw new Error('This member is no longer active.');
-    }
-
     const docRef = doc(db, 'tasks', taskId);
     const snap = await getDoc(docRef);
     if (!snap.exists()) {
@@ -1209,23 +1257,35 @@ class DBService {
     const existingAssignees = getTaskAssignees(task);
     const existingIds = getTaskAssigneeIds(task);
 
-    // Duplicate prevention
-    if (existingIds.includes(candidateEmail)) {
-      throw new Error('This member is already assigned to this task.');
+    // Validate candidates
+    const validNewAssignees: TaskAssignee[] = [];
+    const validCandidateEmails: string[] = [];
+
+    for (const mem of newMembers) {
+      const email = (mem.email || mem.id || '').toLowerCase().trim();
+      if (!email) continue;
+      if (mem.isActive === false) continue;
+      if (existingIds.includes(email) || validCandidateEmails.includes(email)) continue;
+
+      const newAssigneeObj: TaskAssignee = {
+        id: email,
+        name: mem.name || email.split('@')[0],
+        color: mem.avatarColor || mem.color || '#6366f1'
+      };
+      validNewAssignees.push(newAssigneeObj);
+      validCandidateEmails.push(email);
+    }
+
+    if (validNewAssignees.length === 0) {
+      return task;
     }
 
     // Maximum assignee limit check
-    if (existingAssignees.length >= MAX_ASSIGNEES) {
-      throw new Error(`Maximum assignee limit reached (${MAX_ASSIGNEES} assignees).`);
+    if (existingAssignees.length + validNewAssignees.length > MAX_ASSIGNEES) {
+      throw new Error(`Maximum assignee limit reached (${MAX_ASSIGNEES} assignees). Cannot add ${validNewAssignees.length} more.`);
     }
 
-    const newAssigneeObj: TaskAssignee = {
-      id: candidateEmail,
-      name: newMember.name || candidateEmail.split('@')[0],
-      color: newMember.avatarColor || newMember.color || '#6366f1'
-    };
-
-    const updatedAssignees = [...existingAssignees, newAssigneeObj];
+    const updatedAssignees = [...existingAssignees, ...validNewAssignees];
     const updatedAssigneeIds = updatedAssignees.map(a => a.id.toLowerCase());
 
     const updatePayload: any = {
@@ -1242,14 +1302,17 @@ class DBService {
       updatePayload.assigneeColor = updatedAssignees[0].color;
     }
 
+    const cleanedPayload = removeUndefinedDeep(updatePayload);
     const start = performance.now();
-    await updateDoc(docRef, updatePayload);
+    await updateDoc(docRef, cleanedPayload);
     const end = performance.now();
-    console.log(`[dbService] [Firestore] Collection: tasks, Operation: ADD_CO_ASSIGNEE, Time: ${(end - start).toFixed(2)}ms`);
+    console.log(`[dbService] [Firestore] Collection: tasks, Operation: ADD_CO_ASSIGNEES (${validNewAssignees.length}), Time: ${(end - start).toFixed(2)}ms`);
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('task-updated'));
     }
+
+    const addedNamesStr = validNewAssignees.map(a => a.name).join(', ');
 
     // 1. Audit / Activity Log
     try {
@@ -1259,32 +1322,34 @@ class DBService {
         taskTitle: task.title,
         user: addedBy,
         userName: addedByName || addedBy.split('@')[0],
-        action: 'Co-Assignee Added',
+        action: validNewAssignees.length > 1 ? 'Co-Assignees Added' : 'Co-Assignee Added',
         fieldName: 'Assignees',
         oldValue: getTaskAssigneeNames(task),
-        newValue: `${newAssigneeObj.name} (Now: ${getTaskAssigneeNames({ assignees: updatedAssignees })})`,
+        newValue: `${addedNamesStr} (Now: ${getTaskAssigneeNames({ assignees: updatedAssignees })})`,
         timestamp: new Date().toISOString()
       });
     } catch (actErr) {
       console.error("[dbService] Failed to record co-assignee activity log:", actErr);
     }
 
-    // 2. In-App Notification (Sent ONLY to the new co-assignee, not to the delegator or existing assignees)
-    try {
-      await this.addNotification({
-        userId: candidateEmail,
-        title: 'Added as Co-Assignee',
-        message: `${addedByName} added you as a co-assignee to task ${task.taskId || ''}: "${task.title}".`,
-        taskId,
-        type: 'co-assignee-added',
-        read: false,
-        timestamp: new Date().toISOString()
-      });
-    } catch (notifErr) {
-      console.error("[dbService] Failed to send co-assignee notification:", notifErr);
+    // 2. In-App Notification (Sent to each newly assigned member)
+    for (const newAssignee of validNewAssignees) {
+      try {
+        await this.addNotification({
+          userId: newAssignee.id,
+          title: 'Added as Co-Assignee',
+          message: `${addedByName} added you as a co-assignee to task ${task.taskId || ''}: "${task.title}".`,
+          taskId,
+          type: 'co-assignee-added',
+          read: false,
+          timestamp: new Date().toISOString()
+        });
+      } catch (notifErr) {
+        console.error("[dbService] Failed to send co-assignee notification:", notifErr);
+      }
     }
 
-    // 3. Email Notification (Sent to new co-assignee with delegator CC'd)
+    // 3. Email Notification (Sent to new co-assignees with delegator CC'd)
     try {
       if (typeof window !== 'undefined') {
         const mailSubject = `[Task Allocated] Task ${task.taskId || taskId}: ${task.title}`;
@@ -1298,7 +1363,7 @@ class DBService {
         );
 
         const mailPayload: any = {
-          to: recipients.to.length > 0 ? recipients.to : [candidateEmail],
+          to: recipients.to.length > 0 ? recipients.to : validCandidateEmails,
           subject: mailSubject,
           html: `
             <!DOCTYPE html>
@@ -1406,9 +1471,9 @@ class DBService {
           .then(res => res.json())
           .then(resData => {
             if (resData.success) {
-              console.log(`[dbService] Background SMTP co-assignee email sent to ${candidateEmail}`);
+              console.log(`[dbService] Background SMTP co-assignee email sent to ${validCandidateEmails.join(', ')}`);
             } else {
-              console.warn(`[dbService] Background SMTP failed for co-assignee:`, resData.error);
+              console.warn(`[dbService] Background SMTP failed for co-assignees:`, resData.error);
             }
           })
           .catch(err => {
@@ -1420,6 +1485,15 @@ class DBService {
     }
 
     return { ...task, ...updatePayload };
+  }
+
+  async addCoAssignee(
+    taskId: string,
+    newMember: { id?: string; email?: string; name: string; avatarColor?: string; color?: string; isActive?: boolean },
+    addedBy: string,
+    addedByName: string
+  ): Promise<Task> {
+    return this.addCoAssignees(taskId, [newMember], addedBy, addedByName);
   }
 
   // --- SUBTASKS CHECKLIST HANDLERS ---
@@ -1565,11 +1639,14 @@ class DBService {
   async addComment(comment: Omit<Comment, 'id'>, taskSeqId?: string, taskTitle?: string): Promise<Comment> {
     const start = performance.now();
     const isReply = Boolean(comment.parentId);
-    const docRef = await addDoc(commentsCollection, {
+
+    const cleanedComment = removeUndefinedDeep({
       ...comment,
       replyCount: 0,
       timestamp: comment.timestamp || new Date().toISOString()
     });
+
+    const docRef = await addDoc(commentsCollection, cleanedComment);
     const savedComment: Comment = { ...comment, id: docRef.id, replyCount: 0 };
     const end = performance.now();
     console.log(`[dbService] [Firestore] Collection Name: taskComments, Operation: ADD, Execution Time: ${(end - start).toFixed(2)}ms`);
@@ -1592,9 +1669,9 @@ class DBService {
 
     // Snippet for activity and notification
     const snippet = comment.content.replace(/@\[([^\]]+)\]\(([^)]+)\)/g, '@$1');
-    const displaySnippet = snippet.length > 35 ? snippet.substring(0, 35) + '...' : snippet;
+    const displaySnippet = snippet.length > 40 ? snippet.substring(0, 40) + '...' : snippet;
 
-    // Log Activity
+    // Log Comment Activity
     await this.logActivity({
       taskId: comment.taskId,
       taskSeqId: taskSeqId || 'TASK-ID',
@@ -1608,16 +1685,144 @@ class DBService {
       timestamp: new Date().toISOString()
     });
 
-    // Detect @Mentions to send notifications
+    // --- FEATURE 3: AUTOMATIC CO-ASSIGNEE ASSIGNMENT ---
+    const autoAssignedMembers: Member[] = [];
+    const autoAssignedEmails = new Set<string>();
+
+    try {
+      const taskDocRef = doc(db, 'tasks', comment.taskId);
+      const taskSnap = await getDoc(taskDocRef);
+      if (taskSnap.exists()) {
+        const taskData = { id: taskSnap.id, ...taskSnap.data() } as Task;
+        const existingAssignees = getTaskAssignees(taskData);
+        const existingAssigneeIds = getTaskAssigneeIds(taskData); // lowercase emails
+        const authorEmail = (comment.userId || '').toLowerCase().trim();
+
+        // Extract mentions from comment.mentions or regex
+        const mentionedIdentifiers = new Set<string>();
+        if (comment.mentions && comment.mentions.length > 0) {
+          for (const m of comment.mentions) {
+            if (m.userId) mentionedIdentifiers.add(m.userId.toLowerCase().trim());
+            if (m.userEmail) mentionedIdentifiers.add(m.userEmail.toLowerCase().trim());
+          }
+        }
+        const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
+        let match;
+        while ((match = mentionRegex.exec(comment.content)) !== null) {
+          mentionedIdentifiers.add(match[2].toLowerCase().trim());
+        }
+
+        const allMembers = await this.getMembers();
+        const candidateMembers: Member[] = [];
+
+        for (const rawId of Array.from(mentionedIdentifiers)) {
+          if (rawId === authorEmail) continue; // Do not auto-assign the comment author
+          if (existingAssigneeIds.includes(rawId)) continue; // Already assigned
+
+          const memberObj = allMembers.find(m =>
+            (m.email && m.email.toLowerCase() === rawId) ||
+            m.uid === rawId ||
+            m.id === rawId
+          );
+
+          if (memberObj && memberObj.isActive !== false) {
+            const memEmail = (memberObj.email || '').toLowerCase().trim();
+            if (memEmail && !existingAssigneeIds.includes(memEmail) && !candidateMembers.some(c => (c.email || '').toLowerCase() === memEmail)) {
+              candidateMembers.push(memberObj);
+            }
+          }
+        }
+
+        // Capacity check against MAX_ASSIGNEES
+        const availableSlots = Math.max(0, MAX_ASSIGNEES - existingAssignees.length);
+        const membersToAdd = candidateMembers.slice(0, availableSlots);
+
+        if (membersToAdd.length > 0) {
+          const newAssigneeObjs: TaskAssignee[] = membersToAdd.map(m => {
+            const memEmail = (m.email || m.id || '').toLowerCase().trim();
+            const memName = m.name || (m.email ? m.email.split('@')[0] : 'Team Member');
+            return {
+              id: memEmail,
+              name: memName,
+              color: m.avatarColor || '#6366f1'
+            };
+          });
+
+          const updatedAssignees = [...existingAssignees, ...newAssigneeObjs];
+          const updatedAssigneeIds = updatedAssignees.map(a => a.id.toLowerCase());
+
+          const updatePayload: any = {
+            assignees: updatedAssignees,
+            assigneeIds: updatedAssigneeIds,
+            updatedDate: new Date().toISOString(),
+            updatedBy: comment.userId
+          };
+
+          if (!taskData.assigneeId && updatedAssignees.length > 0) {
+            updatePayload.assigneeId = updatedAssignees[0].id;
+            updatePayload.assigneeName = updatedAssignees[0].name;
+            updatePayload.assigneeColor = updatedAssignees[0].color;
+          }
+
+          await updateDoc(taskDocRef, removeUndefinedDeep(updatePayload));
+          autoAssignedMembers.push(...membersToAdd);
+
+          for (const m of membersToAdd) {
+            autoAssignedEmails.add((m.email || '').toLowerCase().trim());
+          }
+
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('task-updated'));
+          }
+
+          // D. Activity Timeline Entry
+          const addedNames = membersToAdd.map(m => m.name).join(' and ');
+          await this.logActivity({
+            taskId: comment.taskId,
+            taskSeqId: taskSeqId || taskData.taskId,
+            taskTitle: taskTitle || taskData.title,
+            user: comment.userId,
+            userName: comment.userName,
+            action: 'Co-Assignee Added via Mention',
+            fieldName: 'Assignees',
+            oldValue: getTaskAssigneeNames(taskData),
+            newValue: `${comment.userName} mentioned ${addedNames} in a comment and added ${membersToAdd.length > 1 ? 'them' : addedNames} as a co-assignee.`,
+            timestamp: new Date().toISOString()
+          });
+
+          // E. Assignment Notification for newly added co-assignees
+          for (const newMem of membersToAdd) {
+            const targetId = (newMem.email || newMem.id || '').toLowerCase();
+            if (!targetId) continue;
+            await this.addNotification({
+              userId: targetId,
+              title: 'Added as Co-Assignee via Mention',
+              message: `${comment.userName} mentioned you in a comment and added you as a co-assignee on task ${taskData.taskId || taskSeqId || 'details'}: "${displaySnippet}"`,
+              taskId: comment.taskId,
+              commentId: savedComment.id,
+              senderEmail: comment.userId,
+              senderName: comment.userName,
+              type: 'co-assignee-added',
+              read: false,
+              timestamp: new Date().toISOString()
+            });
+          }
+        }
+      }
+    } catch (autoErr) {
+      console.error("[dbService] Failed to auto-assign mentioned members as co-assignees:", autoErr);
+    }
+
+    // Detect @Mentions to send notifications for users NOT newly auto-assigned
     const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
     let match;
     const mentions = new Set<string>();
     while ((match = mentionRegex.exec(comment.content)) !== null) {
-      mentions.add(match[2]); // match[2] is the userId/email
+      mentions.add(match[2].toLowerCase().trim());
     }
 
     for (const email of Array.from(mentions)) {
-      if (email.toLowerCase() !== comment.userId.toLowerCase()) {
+      if (email !== comment.userId.toLowerCase() && !autoAssignedEmails.has(email)) {
         await this.addNotification({
           userId: email,
           title: isReply ? 'Mentioned in Reply' : 'Mentioned in Comment',
@@ -1714,6 +1919,7 @@ class DBService {
       console.error("[dbService] Failed to notify watchers of comment:", watchErr);
     }
 
+    savedComment.autoAssignedMembers = autoAssignedMembers;
     return savedComment;
   }
 
@@ -1808,8 +2014,14 @@ class DBService {
 
   // --- NOTIFICATIONS HUB HANDLERS ---
   subscribeNotifications(userId: string, callback: (notifications: NotificationItem[]) => void): () => void {
+    const cleanId = (userId || '').toLowerCase().trim();
+    if (!cleanId) {
+      callback([]);
+      return () => {};
+    }
+
     try {
-      const q = query(notificationsCollection, where('userId', '==', userId));
+      const q = query(notificationsCollection, where('userId', '==', cleanId));
       return onSnapshot(q, (snapshot) => {
         const list: NotificationItem[] = [];
         snapshot.forEach(docSnap => {
@@ -2032,6 +2244,9 @@ class DBService {
   }
 
   async addNotification(notification: Omit<NotificationItem, 'id' | 'notificationId'>): Promise<void> {
+    const cleanUserId = (notification.userId || '').toLowerCase().trim();
+    if (!cleanUserId) return;
+
     // Check User Notification Preferences before creating notification
     let category: keyof NotificationPreferences | 'system' = 'system';
     if (notification.isWatcherNotification) {
@@ -2073,9 +2288,9 @@ class DBService {
     }
 
     if (category !== 'system') {
-      const userPrefs = await this.getUserNotificationPreferences(notification.userId);
+      const userPrefs = await this.getUserNotificationPreferences(cleanUserId);
       if (userPrefs && userPrefs[category] === false) {
-        console.log(`[dbService] Notification for ${notification.userId} skipped due to preference '${category}: false'`);
+        console.log(`[dbService] Notification for ${cleanUserId} skipped due to preference '${category}: false'`);
         return;
       }
     }
@@ -2085,6 +2300,7 @@ class DBService {
       ...notification,
       id: notId,
       notificationId: notId,
+      userId: cleanUserId,
       read: notification.read !== undefined ? notification.read : false,
       isRead: notification.read !== undefined ? notification.read : false,
       isWatcherNotification: notification.isWatcherNotification || false,
@@ -2140,6 +2356,45 @@ class DBService {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('notifications-updated'));
     }
+  }
+
+  async deleteAllNotifications(userEmail: string): Promise<{ deletedCount: number }> {
+    const cleanEmail = (userEmail || '').toLowerCase().trim();
+    if (!cleanEmail) {
+      throw new Error("User email is required to delete notifications.");
+    }
+
+    const start = performance.now();
+    const q = query(notificationsCollection, where('userId', '==', cleanEmail));
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      return { deletedCount: 0 };
+    }
+
+    // Process in batches of 450 (well within Firestore 500 operations per batch limit)
+    const BATCH_SIZE = 450;
+    const docs = snap.docs;
+    let deletedCount = 0;
+
+    for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+      const chunk = docs.slice(i, i + BATCH_SIZE);
+      const batch = writeBatch(db);
+      for (const d of chunk) {
+        batch.delete(d.ref);
+      }
+      await batch.commit();
+      deletedCount += chunk.length;
+    }
+
+    const end = performance.now();
+    console.log(`[dbService] [Firestore] Collection Name: notifications, Operation: DELETE_ALL (${deletedCount} items), Execution Time: ${(end - start).toFixed(2)}ms`);
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('notifications-updated'));
+    }
+
+    return { deletedCount };
   }
 
   // --- SYSTEM WIDE ACTIVITY LOGGER ---
@@ -2368,17 +2623,57 @@ class DBService {
         console.warn("[dbService] Members subscription first snapshot timed out. Returning empty array.");
         localCallback([]);
       }
-    }, 3500);
+    }, 15000);
 
     let unsubscribe = () => {};
     try {
       unsubscribe = onSnapshot(usersCollection, (snapshot) => {
-        const members: Member[] = [];
+        const membersMap = new Map<string, Member>();
         snapshot.forEach((docSnap) => {
-          members.push({ ...docSnap.data(), id: docSnap.id } as Member);
+          const data = docSnap.data();
+          const rawEmail = (data.email || '').toLowerCase().trim();
+          const rawName = (data.name || data.displayName || data.fullName || (rawEmail ? rawEmail.split('@')[0] : '') || 'Team Member').trim();
+          const member: Member = {
+            ...data,
+            id: docSnap.id,
+            uid: data.uid || docSnap.id,
+            name: rawName,
+            email: rawEmail,
+            role: data.role || 'Member',
+            avatarColor: data.avatarColor || '#3b82f6',
+            isActive: data.isActive !== false,
+            createdDate: data.createdDate || data.createdAt || new Date().toISOString(),
+          };
+
+          const key = rawEmail || data.uid || docSnap.id;
+
+          if (!membersMap.has(key)) {
+            membersMap.set(key, member);
+          } else {
+            const existing = membersMap.get(key)!;
+            const merged: Member = {
+              ...existing,
+              ...member,
+              name: member.name || existing.name,
+              email: member.email || existing.email,
+              uid: member.uid || existing.uid,
+              id: (member.uid && docSnap.id === member.uid) ? docSnap.id : existing.id,
+              role: (existing.role === 'SuperAdmin' || member.role === 'SuperAdmin')
+                ? 'SuperAdmin'
+                : (existing.role === 'Admin' || member.role === 'Admin')
+                ? 'Admin'
+                : member.role || existing.role || 'Member',
+              avatarColor: member.avatarColor || existing.avatarColor,
+              isActive: existing.isActive !== false && member.isActive !== false,
+              createdDate: existing.createdDate || member.createdDate,
+            };
+            membersMap.set(key, merged);
+          }
         });
+        const list = Array.from(membersMap.values());
+        list.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
         clearTimeout(timer);
-        localCallback(members);
+        localCallback(list);
       }, (error: any) => {
         console.error("[dbService] [Realtime] Members subscription error:", error);
         clearTimeout(timer);
@@ -2657,6 +2952,499 @@ class DBService {
       clearTimeout(timer);
       unsubscribe();
     };
+  }
+
+  // ==========================================
+  // PROJECT CHANGE CHECKLIST & QA VERIFICATION
+  // ==========================================
+
+  async getProjectChangeChecklists(): Promise<ProjectChangeChecklist[]> {
+    try {
+      const q = query(projectChangeChecklistsCollection);
+      const queryPromise = getDocs(q).then((snapshot) => {
+        const list: ProjectChangeChecklist[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProjectChangeChecklist);
+        });
+        return list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
+      });
+      return await withTimeout(queryPromise, 3500, []);
+    } catch (err) {
+      console.error("[dbService] Error getting project change checklists:", err);
+      return [];
+    }
+  }
+
+  subscribeProjectChangeChecklists(callback: (checklists: ProjectChangeChecklist[]) => void) {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      callback([]);
+    }, 4000);
+
+    try {
+      unsubscribe = onSnapshot(projectChangeChecklistsCollection, (snapshot) => {
+        clearTimeout(timer);
+        const list: ProjectChangeChecklist[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProjectChangeChecklist);
+        });
+        callback(list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()));
+      }, (error) => {
+        console.error("[dbService] Project change checklists subscription error:", error);
+        clearTimeout(timer);
+        callback([]);
+      });
+    } catch (err) {
+      console.error("[dbService] Subscription setup failed for checklists:", err);
+      clearTimeout(timer);
+      callback([]);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
+
+  async createProjectChangeChecklist(
+    data: Omit<ProjectChangeChecklist, 'id' | 'status' | 'createdDate' | 'updatedDate'>
+  ): Promise<string> {
+    const now = new Date().toISOString();
+    const cleanPoints = data.points && Array.isArray(data.points)
+      ? data.points.map(p => p.trim()).filter(Boolean)
+      : (data.changes || []).map(p => p.trim()).filter(Boolean);
+
+    const payload: Omit<ProjectChangeChecklist, 'id'> = {
+      projectId: data.projectId,
+      projectName: data.projectName,
+      title: data.title.trim(),
+      description: data.description ? data.description.trim() : '',
+      points: cleanPoints,
+      // Backward compatibility fields
+      changes: cleanPoints,
+      verificationItems: cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      status: 'Available for Release',
+      createdBy: data.createdBy,
+      createdByName: data.createdByName,
+      createdDate: now,
+      updatedDate: now,
+      currentReleaseId: null,
+      currentReleaseName: null,
+      rejectionHistory: []
+    };
+
+    const docRef = await addDoc(projectChangeChecklistsCollection, payload);
+    return docRef.id;
+  }
+
+  async updateProjectChangeChecklist(
+    id: string,
+    updates: Partial<ProjectChangeChecklist>
+  ): Promise<void> {
+    const docRef = doc(db, 'projectChangeChecklists', id);
+    const payload: any = {
+      ...updates,
+      updatedDate: new Date().toISOString()
+    };
+    if (updates.points && Array.isArray(updates.points)) {
+      const cleanPoints = updates.points.map(p => p.trim()).filter(Boolean);
+      payload.points = cleanPoints;
+      payload.changes = cleanPoints;
+      payload.verificationItems = cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' }));
+    }
+    await updateDoc(docRef, payload);
+  }
+
+  async deleteProjectChangeChecklist(id: string): Promise<void> {
+    const docRef = doc(db, 'projectChangeChecklists', id);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      throw new Error("Change checklist not found.");
+    }
+
+    const data = snap.data() as ProjectChangeChecklist;
+    // Strict safeguard: allow deletion ONLY if unreleased and never included in a release
+    const hasReleaseHistory = (data.rejectionHistory && data.rejectionHistory.length > 0) || Boolean(data.currentReleaseId);
+    if (data.status === 'Included in Release' || data.status === 'Completed' || hasReleaseHistory) {
+      throw new Error("Cannot delete: This change is part of a production release or has release history. Deletion is only allowed for unreleased entries.");
+    }
+
+    await deleteDoc(docRef);
+  }
+
+  async addChangePoint(checklistId: string, pointText: string): Promise<string[]> {
+    const cleanText = pointText.trim();
+    if (!cleanText) throw new Error("Point text cannot be empty.");
+
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentPoints = getChecklistPoints(data);
+    const updatedPoints = [...currentPoints, cleanText];
+
+    await updateDoc(docRef, {
+      points: updatedPoints,
+      changes: updatedPoints,
+      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      updatedDate: new Date().toISOString()
+    });
+
+    return updatedPoints;
+  }
+
+  async updateChangePoint(checklistId: string, pointIndex: number, newText: string): Promise<string[]> {
+    const cleanText = newText.trim();
+    if (!cleanText) throw new Error("Point text cannot be empty.");
+
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentPoints = getChecklistPoints(data);
+    if (pointIndex < 0 || pointIndex >= currentPoints.length) {
+      throw new Error("Invalid point index.");
+    }
+
+    const updatedPoints = [...currentPoints];
+    updatedPoints[pointIndex] = cleanText;
+
+    await updateDoc(docRef, {
+      points: updatedPoints,
+      changes: updatedPoints,
+      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      updatedDate: new Date().toISOString()
+    });
+
+    return updatedPoints;
+  }
+
+  async deleteChangePoint(checklistId: string, pointIndex: number): Promise<string[]> {
+    const docRef = doc(db, 'projectChangeChecklists', checklistId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) throw new Error("Change checklist not found.");
+
+    const data = snap.data() as ProjectChangeChecklist;
+    const currentPoints = getChecklistPoints(data);
+    if (currentPoints.length <= 1) {
+      throw new Error("A change checklist must have at least one point.");
+    }
+    if (pointIndex < 0 || pointIndex >= currentPoints.length) {
+      throw new Error("Invalid point index.");
+    }
+
+    const updatedPoints = currentPoints.filter((_, idx) => idx !== pointIndex);
+
+    await updateDoc(docRef, {
+      points: updatedPoints,
+      changes: updatedPoints,
+      verificationItems: updatedPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      updatedDate: new Date().toISOString()
+    });
+
+    return updatedPoints;
+  }
+
+  async reopenRejectedChangeChecklist(
+    id: string,
+    updates: {
+      title?: string;
+      description?: string;
+      points?: string[];
+      changes?: string[];
+      verificationItems?: VerificationChecklistItem[];
+    }
+  ): Promise<void> {
+    const docRef = doc(db, 'projectChangeChecklists', id);
+    const cleanPoints = updates.points || updates.changes || [];
+    await updateDoc(docRef, {
+      ...updates,
+      points: cleanPoints,
+      changes: cleanPoints,
+      verificationItems: cleanPoints.map((p, idx) => ({ id: `p-${idx + 1}`, text: p, status: 'Pending' })),
+      status: 'Available for Release',
+      currentReleaseId: null,
+      currentReleaseName: null,
+      updatedDate: new Date().toISOString()
+    });
+  }
+
+  async getProductionReleases(): Promise<ProductionRelease[]> {
+    try {
+      const q = query(productionReleasesCollection);
+      const queryPromise = getDocs(q).then((snapshot) => {
+        const list: ProductionRelease[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProductionRelease);
+        });
+        return list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
+      });
+      return await withTimeout(queryPromise, 3500, []);
+    } catch (err) {
+      console.error("[dbService] Error getting production releases:", err);
+      return [];
+    }
+  }
+
+  subscribeProductionReleases(callback: (releases: ProductionRelease[]) => void) {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      callback([]);
+    }, 4000);
+
+    try {
+      unsubscribe = onSnapshot(productionReleasesCollection, (snapshot) => {
+        clearTimeout(timer);
+        const list: ProductionRelease[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...docSnap.data(), id: docSnap.id } as ProductionRelease);
+        });
+        callback(list.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()));
+      }, (error) => {
+        console.error("[dbService] Production releases subscription error:", error);
+        clearTimeout(timer);
+        callback([]);
+      });
+    } catch (err) {
+      console.error("[dbService] Subscription setup failed for production releases:", err);
+      clearTimeout(timer);
+      callback([]);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
+
+  async createProductionRelease(data: {
+    name: string;
+    releaseDate: string;
+    changeChecklistIds: string[];
+    createdBy: string;
+    createdByName: string;
+  }): Promise<string> {
+    // 1. Fetch the selected change checklists to build an authoritative snapshot
+    const allChecklists = await this.getProjectChangeChecklists();
+    const selected = allChecklists.filter(c => c.id && data.changeChecklistIds.includes(c.id));
+
+    if (selected.length === 0) {
+      throw new Error("Please select at least one available project change.");
+    }
+
+    const now = new Date().toISOString();
+
+    const items: ReleaseChangeItem[] = selected.map(c => {
+      const commonPoints = getChecklistPoints(c);
+      const verificationList: VerificationChecklistItem[] = commonPoints.map((p, idx) => ({
+        id: `p-${idx + 1}`,
+        text: p,
+        status: 'Pending'
+      }));
+
+      return {
+        changeChecklistId: c.id!,
+        title: c.title,
+        description: c.description || '',
+        projectId: c.projectId,
+        projectName: c.projectName,
+        developerEmail: c.createdBy,
+        developerName: c.createdByName,
+        points: verificationList,
+        // Backward compatibility
+        changes: commonPoints,
+        verificationItems: verificationList,
+        status: 'Pending QA'
+      };
+    });
+
+    const releasePayload: Omit<ProductionRelease, 'id'> = {
+      name: data.name.trim(),
+      releaseDate: data.releaseDate,
+      status: 'In QA',
+      changeChecklistIds: data.changeChecklistIds,
+      items,
+      createdBy: data.createdBy,
+      createdByName: data.createdByName,
+      createdDate: now
+    };
+
+    // 2. Add release document
+    const releaseDocRef = await addDoc(productionReleasesCollection, releasePayload);
+    const releaseId = releaseDocRef.id;
+
+    // 3. Update all selected change checklists to 'Included in Release'
+    const batch = writeBatch(db);
+    for (const c of selected) {
+      const checklistDoc = doc(db, 'projectChangeChecklists', c.id!);
+      batch.update(checklistDoc, {
+        status: 'Included in Release',
+        currentReleaseId: releaseId,
+        currentReleaseName: data.name.trim(),
+        updatedDate: now
+      });
+    }
+    await batch.commit();
+
+    return releaseId;
+  }
+
+  async updateReleaseItemVerification(
+    releaseId: string,
+    checklistId: string,
+    itemId: string,
+    status: 'Pending' | 'Passed' | 'Failed',
+    qaUser?: string,
+    qaUserName?: string
+  ): Promise<void> {
+    const releaseRef = doc(db, 'productionReleases', releaseId);
+    const releaseSnap = await getDoc(releaseRef);
+    if (!releaseSnap.exists()) throw new Error("Release not found");
+
+    const releaseData = releaseSnap.data() as ProductionRelease;
+    const items = [...releaseData.items];
+    const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
+
+    if (targetItemIndex === -1) throw new Error("Change item not found in release");
+
+    const targetItem = { ...items[targetItemIndex] };
+    const now = new Date().toISOString();
+    const currentPoints = getReleaseItemPoints(targetItem);
+
+    const updatedPoints = currentPoints.map(v => 
+      v.id === itemId 
+        ? { 
+            ...v, 
+            status, 
+            qaUser: qaUser || v.qaUser, 
+            qaUserName: qaUserName || v.qaUserName, 
+            qaDate: status !== 'Pending' ? now : undefined 
+          } 
+        : v
+    );
+
+    targetItem.points = updatedPoints;
+    targetItem.verificationItems = updatedPoints;
+
+    items[targetItemIndex] = targetItem;
+    await updateDoc(releaseRef, { items });
+  }
+
+  async completeReleaseChangeItem(
+    releaseId: string,
+    checklistId: string,
+    qaUser: string,
+    qaUserName: string
+  ): Promise<void> {
+    const releaseRef = doc(db, 'productionReleases', releaseId);
+    const releaseSnap = await getDoc(releaseRef);
+    if (!releaseSnap.exists()) throw new Error("Release not found");
+
+    const releaseData = releaseSnap.data() as ProductionRelease;
+    const items = [...releaseData.items];
+    const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
+
+    if (targetItemIndex === -1) throw new Error("Change item not found in release");
+
+    const targetItem = { ...items[targetItemIndex] };
+    const currentPoints = getReleaseItemPoints(targetItem);
+    const hasUnpassed = currentPoints.some(v => v.status !== 'Passed');
+    if (hasUnpassed) {
+      throw new Error("All verification points must be marked 'Passed' before completing.");
+    }
+
+    const now = new Date().toISOString();
+    targetItem.status = 'Completed';
+    targetItem.qaUser = qaUser;
+    targetItem.qaUserName = qaUserName;
+    targetItem.qaDate = now;
+
+    items[targetItemIndex] = targetItem;
+
+    // Check if entire release is completed
+    const allCompleted = items.every(it => it.status === 'Completed');
+    const hasRejected = items.some(it => it.status === 'Rejected');
+    const newReleaseStatus: 'In QA' | 'Completed' | 'Partially Rejected' = allCompleted
+      ? 'Completed'
+      : hasRejected && items.every(it => it.status !== 'Pending QA')
+      ? 'Partially Rejected'
+      : releaseData.status;
+
+    await updateDoc(releaseRef, { items, status: newReleaseStatus });
+
+    // Update the underlying change checklist
+    const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
+    await updateDoc(checklistRef, {
+      status: 'Completed',
+      updatedDate: now
+    });
+  }
+
+  async rejectReleaseChangeItem(
+    releaseId: string,
+    checklistId: string,
+    reason: string,
+    qaUser: string,
+    qaUserName: string,
+    failedPointIndex?: number,
+    failedPointText?: string
+  ): Promise<void> {
+    if (!reason || !reason.trim()) {
+      throw new Error("A rejection reason is mandatory.");
+    }
+
+    const releaseRef = doc(db, 'productionReleases', releaseId);
+    const releaseSnap = await getDoc(releaseRef);
+    if (!releaseSnap.exists()) throw new Error("Release not found");
+
+    const releaseData = releaseSnap.data() as ProductionRelease;
+    const items = [...releaseData.items];
+    const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
+
+    if (targetItemIndex === -1) throw new Error("Change item not found in release");
+
+    const targetItem = { ...items[targetItemIndex] };
+    const now = new Date().toISOString();
+
+    targetItem.status = 'Rejected';
+    targetItem.rejectionReason = reason.trim();
+    targetItem.qaUser = qaUser;
+    targetItem.qaUserName = qaUserName;
+    targetItem.qaDate = now;
+
+    items[targetItemIndex] = targetItem;
+
+    // Update release status
+    const allDecided = items.every(it => it.status !== 'Pending QA');
+    const newReleaseStatus = allDecided ? 'Partially Rejected' : 'In QA';
+
+    await updateDoc(releaseRef, { items, status: newReleaseStatus });
+
+    // Update underlying change checklist and preserve rejection history
+    const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
+    const checklistSnap = await getDoc(checklistRef);
+    const existingHistory = checklistSnap.exists() && checklistSnap.data().rejectionHistory 
+      ? checklistSnap.data().rejectionHistory 
+      : [];
+
+    const rejectionRecord: ChangeRejectionRecord = {
+      releaseId,
+      releaseName: releaseData.name,
+      rejectedBy: qaUser,
+      rejectedByName: qaUserName,
+      rejectedDate: now,
+      reason: reason.trim(),
+      ...(failedPointIndex !== undefined ? { failedPointIndex } : {}),
+      ...(failedPointText ? { failedPointText } : {})
+    };
+
+    await updateDoc(checklistRef, {
+      status: 'Rejected by QA',
+      rejectionHistory: [...existingHistory, rejectionRecord],
+      updatedDate: now
+    });
   }
 }
 
