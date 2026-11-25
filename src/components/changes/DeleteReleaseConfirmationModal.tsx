@@ -5,20 +5,21 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   X, 
   Trash2, 
-  Mail, 
   AlertTriangle, 
+  AlertCircle,
   CheckCircle2, 
   Loader2, 
   ShieldAlert, 
-  FileText,
   Calendar,
   Layers,
-  RefreshCw,
-  KeyRound
+  Clock,
+  ShieldCheck,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import { ProductionRelease } from '@/types';
 import { dbService } from '@/services/dbService';
-import { sendReleaseArchiveEmail, checkSmtpStatus, SendArchiveEmailResult } from '@/services/emailArchiveService';
+import { checkRelease7DayEligibility, formatDate } from '@/utils';
 import { useAuth } from '@/hooks/useAuth';
 import toast from 'react-hot-toast';
 
@@ -39,101 +40,82 @@ export default function DeleteReleaseConfirmationModal({
 }: DeleteReleaseConfirmationModalProps) {
   const { user } = useAuth();
   const [confirmedCheckbox, setConfirmedCheckbox] = useState(false);
+  const [adminOverrideCheckbox, setAdminOverrideCheckbox] = useState(false);
   const [reason, setReason] = useState('');
-  const [extraEmail, setExtraEmail] = useState('');
-  const [processingState, setProcessingState] = useState<'idle' | 'archiving' | 'deleting' | 'success'>('idle');
+  const [processingState, setProcessingState] = useState<'idle' | 'deleting' | 'success'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [cachedArchiveResult, setCachedArchiveResult] = useState<SendArchiveEmailResult | null>(null);
-  const [smtpStatus, setSmtpStatus] = useState<{ configured: boolean; connected?: boolean; missing?: string[]; error?: string } | null>(null);
-  const [checkingSmtp, setCheckingSmtp] = useState(false);
 
-  // Check SMTP configuration when dialog opens
   useEffect(() => {
     if (isOpen) {
       setErrorMessage(null);
       setConfirmedCheckbox(false);
-      setCachedArchiveResult(null);
-      checkConfig();
+      setAdminOverrideCheckbox(false);
+      setReason('');
+      setProcessingState('idle');
     }
   }, [isOpen]);
-
-  const checkConfig = async () => {
-    setCheckingSmtp(true);
-    try {
-      const status = await checkSmtpStatus();
-      setSmtpStatus(status);
-    } catch {
-      setSmtpStatus({ configured: false, error: 'Could not connect to verification endpoint.' });
-    } finally {
-      setCheckingSmtp(false);
-    }
-  };
 
   if (!isOpen || releasesToDelete.length === 0) return null;
 
   const count = releasesToDelete.length;
   const isMultiple = count > 1;
 
-  const title = isDeleteAll 
-    ? 'Delete All Completed Release Verifications?' 
-    : isMultiple 
-      ? `Delete ${count} Completed Release Verifications?` 
-      : `Delete Completed Release: ${releasesToDelete[0].name}?`;
+  const isSuperAdmin = Boolean(user?.role === 'SuperAdmin' || 
+    (user?.email && ['admin@i2space.com', 'rr@i2space.com'].includes(user.email.toLowerCase())));
 
-  const deleteMode = isDeleteAll ? 'all' : isMultiple ? 'bulk' : 'individual';
+  // Analyze 7-day eligibility for each target release
+  const eligibilityAnalysis = releasesToDelete.map(rel => {
+    const analysis = checkRelease7DayEligibility({
+      status: rel.status,
+      terminalDate: rel.terminalDate,
+      createdDate: rel.createdDate
+    });
+    return {
+      release: rel,
+      ...analysis
+    };
+  });
+
+  const allEligible = eligibilityAnalysis.every(it => it.isEligible);
+  const ineligibleCount = eligibilityAnalysis.filter(it => !it.isEligible).length;
+
+  const canProceed = confirmedCheckbox && (allEligible || (isSuperAdmin && adminOverrideCheckbox));
+
+  const title = isDeleteAll 
+    ? 'Hard Delete All Eligible Terminal Releases?' 
+    : isMultiple 
+      ? `Hard Delete ${count} Selected Releases?` 
+      : `Hard Delete Release: ${releasesToDelete[0].name}?`;
 
   const userEmail = user?.email || 'admin@apextasks.com';
   const userName = user?.displayName || userEmail.split('@')[0];
 
   const handleExecuteDelete = async () => {
-    if (!confirmedCheckbox) {
-      toast.error('Please confirm the archive and deletion checkbox');
+    if (!canProceed) {
+      toast.error('Please confirm the deletion requirements.');
       return;
     }
 
     setErrorMessage(null);
+    setProcessingState('deleting');
 
     try {
-      // 1. Mandatory Step: Generate & send email archive (or reuse already-sent archive on retry)
-      let archiveResult = cachedArchiveResult;
-      if (!archiveResult) {
-        setProcessingState('archiving');
-        const additionalRecipients = extraEmail.trim()
-          ? extraEmail.split(/[,;]/).map(e => e.trim()).filter(Boolean)
-          : [];
-
-        archiveResult = await sendReleaseArchiveEmail({
-          releases: releasesToDelete,
-          deleteMode,
-          deletedBy: userEmail,
-          deletedByName: userName,
-          reason: reason.trim() || undefined,
-          additionalRecipients
-        });
-        setCachedArchiveResult(archiveResult);
-      }
-
-      // 2. Mandatory Step: Delete records from database only after email confirmation
-      setProcessingState('deleting');
-
       const releaseIds = releasesToDelete.map(r => r.id!).filter(Boolean);
-      const deleteResult = await dbService.deleteCompletedProductionReleases({
+      const res = await dbService.deleteEligibleReleases({
         releaseIds,
         deletedBy: userEmail,
         deletedByName: userName,
-        emailRecipients: archiveResult.recipients,
-        emailSubject: archiveResult.subject,
-        emailMessageId: archiveResult.messageId,
+        forceAdminOverride: Boolean(isSuperAdmin && adminOverrideCheckbox),
         reason: reason.trim() || undefined
       });
 
       setProcessingState('success');
-      toast.success(`Successfully archived and deleted ${deleteResult.deletedCount} completed release(s)!`);
-      onSuccess(deleteResult.deletedCount);
+      toast.success(`Successfully deleted ${res.deletedCount} release record(s)!`);
+      onSuccess(res.deletedCount);
       onClose();
     } catch (err: any) {
       console.error('Delete execution failed:', err);
-      const errMsg = err?.message || 'An unexpected error occurred during email archival or deletion.';
+      const errMsg = err?.message || 'Failed to hard-delete release records.';
       setErrorMessage(errMsg);
       toast.error(errMsg);
       setProcessingState('idle');
@@ -167,7 +149,7 @@ export default function DeleteReleaseConfirmationModal({
                   {title}
                 </h2>
                 <p className="text-xs text-rose-400 font-medium mt-0.5">
-                  Permanent cleanup with mandatory email archive
+                  Permanent record cleanup &bull; Zero impact on tasks or projects
                 </p>
               </div>
             </div>
@@ -196,194 +178,151 @@ export default function DeleteReleaseConfirmationModal({
               </div>
             )}
 
-            {/* SMTP Missing Configuration Alert */}
-            {smtpStatus && !smtpStatus.configured && !cachedArchiveResult && (
-              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2 text-amber-400">
-                <div className="flex items-center justify-between gap-2 font-bold">
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 shrink-0" />
-                    <span>SMTP Email Delivery Incomplete</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={checkConfig}
-                    disabled={checkingSmtp}
-                    className="flex items-center gap-1 text-[10px] text-amber-300 hover:text-white px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 transition-colors cursor-pointer"
-                  >
-                    <RefreshCw className={`h-3 w-3 ${checkingSmtp ? 'animate-spin' : ''}`} />
-                    <span>Check Again</span>
-                  </button>
-                </div>
-                <p className="text-[11px] leading-relaxed text-foreground/90 font-medium">
-                  {smtpStatus.error || 'Server email delivery is not configured.'}
-                </p>
-                {smtpStatus.missing && smtpStatus.missing.length > 0 && (
-                  <div className="text-[10px] bg-background/50 p-2 rounded-lg border border-amber-500/20 space-y-1">
-                    <span className="font-semibold text-amber-300">Required variables in .env.local:</span>
-                    <ul className="list-disc list-inside space-y-0.5 font-mono text-[10px] text-foreground">
-                      {smtpStatus.missing.map((v) => (
-                        <li key={v}>{v}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <p className="text-[10px] text-muted-foreground italic">
-                  Safety policy: Release records cannot be deleted until archive transmission is operational.
-                </p>
-              </div>
-            )}
-
-            {/* Reusable archive confirmation on retry */}
-            {cachedArchiveResult && (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-emerald-400 text-xs">
-                <div className="flex items-center gap-2 font-semibold">
-                  <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  <span>Email archive verified (Message ID: {cachedArchiveResult.messageId}). Ready to retry deletion.</span>
-                </div>
-              </div>
-            )}
-
-            {/* Email Guarantee Notice */}
-            <div className="p-3.5 rounded-xl bg-accent/30 border border-card-border/80 space-y-2">
+            {/* Seven-Day Retention Notice */}
+            <div className="p-3.5 rounded-xl bg-accent/30 border border-card-border/80 space-y-1.5">
               <div className="flex items-center gap-2 text-foreground font-bold">
-                <Mail className="h-4 w-4 text-primary shrink-0" />
-                <span>Automatic Historical Email Archive Guarantee</span>
+                <Clock className="h-4 w-4 text-primary shrink-0" />
+                <span>7-Day Retention Policy</span>
               </div>
-              <p className="text-muted-foreground leading-relaxed">
-                Before any record is removed, Apex Tasks will transmit a complete HTML email archive detailing the release metadata, linked developer change points, developer notes, and QA verification results. <strong>If email transmission fails, zero records will be deleted.</strong>
+              <p className="text-muted-foreground leading-relaxed text-[11px]">
+                Under system policy, terminal release verification records (Completed, Rejected, or Partially Rejected) become eligible for hard deletion <strong>7 days</strong> after entering their terminal state. Active releases cannot be deleted.
               </p>
-              <div className="pt-1 text-[11px] text-foreground font-semibold flex items-center gap-2">
-                <span>Archive Recipient:</span>
-                <span className="font-mono text-primary bg-primary/10 px-2 py-0.5 rounded border border-primary/20">
-                  {userEmail}
-                </span>
-              </div>
             </div>
 
-            {/* Releases To Be Deleted Summary */}
-            <div className="space-y-1.5">
-              <label className="font-bold text-foreground flex items-center justify-between">
-                <span>Eligible Completed Release(s) to Delete ({count}):</span>
-                <span className="text-[11px] text-emerald-500 font-semibold">100% Completed</span>
+            {/* List of Releases with Retention Status */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-foreground block">
+                Target Release Records ({releasesToDelete.length}):
               </label>
-              <div className="max-h-36 overflow-y-auto space-y-1.5 p-2 rounded-xl bg-accent/20 border border-card-border custom-scrollbar">
-                {releasesToDelete.map((rel) => (
-                  <div key={rel.id} className="p-2 rounded-lg bg-card/60 border border-card-border/60 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-bold text-foreground truncate">{rel.name}</p>
-                      <p className="text-[10px] text-muted-foreground flex items-center gap-2 mt-0.5">
-                        <span>Date: {rel.releaseDate}</span>
-                        <span>&bull;</span>
-                        <span>{rel.items?.length || 0} project change(s)</span>
+              <div className="divide-y divide-card-border/60 border border-card-border/80 rounded-xl overflow-hidden bg-accent/15 max-h-48 overflow-y-auto custom-scrollbar">
+                {eligibilityAnalysis.map(({ release, isEligible, daysRemaining, eligibleDateStr }) => (
+                  <div key={release.id} className="p-3 flex items-center justify-between gap-3 text-xs">
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          (release.releaseType || 'Production') === 'UAT' ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/25' :
+                          (release.releaseType || 'Production') === 'Hotfix' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' :
+                          'bg-purple-500/15 text-purple-400 border border-purple-500/25'
+                        }`}>
+                          {release.releaseType || 'Production'}
+                        </span>
+                        <p className="font-bold text-foreground truncate">{release.name}</p>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Date: {release.releaseDate} &bull; Status: <strong className="text-foreground">{release.status}</strong>
                       </p>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 shrink-0">
-                      Completed
-                    </span>
+
+                    <div className="shrink-0 text-right">
+                      {isEligible ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded-full">
+                          <CheckCircle2 className="h-3 w-3" />
+                          <span>Eligible (&ge; 7 days)</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded-full" title={`Eligible on ${eligibleDateStr}`}>
+                          <Clock className="h-3 w-3" />
+                          <span>Ineligible ({daysRemaining}d left)</span>
+                        </span>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Additional Recipient Field */}
-            <div className="space-y-1">
-              <label className="font-semibold text-muted-foreground flex items-center gap-1.5">
-                <span>Additional Notification Recipient(s)</span>
-                <span className="text-[10px] font-normal text-muted-foreground/60">(Optional, comma separated)</span>
-              </label>
-              <input
-                type="text"
-                value={extraEmail}
-                onChange={(e) => setExtraEmail(e.target.value)}
-                placeholder="e.g. qa-lead@company.com, manager@company.com"
-                disabled={processingState !== 'idle'}
-                className="w-full px-3 py-2 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
-              />
-            </div>
+            {/* Ineligible Alert & Admin Override */}
+            {!allEligible && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 space-y-2 text-xs">
+                <div className="flex items-center gap-2 font-bold">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>{ineligibleCount} record(s) have not reached the 7-day retention period</span>
+                </div>
+                <p className="text-[11px] text-foreground leading-relaxed">
+                  Before 7 days, normal deletion is restricted to preserve QA history and audit traces.
+                </p>
 
-            {/* Deletion Reason (Optional) */}
-            <div className="space-y-1">
-              <label className="font-semibold text-muted-foreground flex items-center gap-1.5">
-                <span>Reason for Deletion</span>
-                <span className="text-[10px] font-normal text-muted-foreground/60">(Optional)</span>
+                {isSuperAdmin ? (
+                  <div className="pt-2 border-t border-amber-500/20">
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={adminOverrideCheckbox}
+                        onChange={(e) => setAdminOverrideCheckbox(e.target.checked)}
+                        className="mt-0.5 rounded border-amber-500 text-rose-600 focus:ring-rose-500"
+                      />
+                      <span className="font-bold text-[11px] text-amber-300">
+                        Administrator Force Override: I explicitly authorize immediate hard deletion before the 7-day retention period has elapsed.
+                      </span>
+                    </label>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground italic">
+                    Only authorized Administrators can override the 7-day retention rule.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Optional Reason */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-foreground block">
+                Cleanup / Deletion Reason (Optional):
               </label>
               <input
                 type="text"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="e.g. End-of-cycle cleanup of verified production releases"
-                disabled={processingState !== 'idle'}
-                className="w-full px-3 py-2 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50"
+                placeholder="e.g. Routine 7-day cleanup of verified terminal release"
+                className="w-full px-3.5 py-2 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-rose-500/40"
               />
             </div>
 
-            {/* Confirmation Checkbox */}
-            <div className="p-3 rounded-xl bg-rose-500/[0.08] border border-rose-500/20">
-              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+            {/* Hard Delete Confirmation Checkbox */}
+            <div className="pt-2">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none p-3 rounded-xl bg-rose-500/5 border border-rose-500/20 hover:bg-rose-500/10 transition-colors">
                 <input
                   type="checkbox"
                   checked={confirmedCheckbox}
                   onChange={(e) => setConfirmedCheckbox(e.target.checked)}
-                  disabled={processingState !== 'idle'}
-                  className="mt-0.5 rounded text-rose-600 focus:ring-rose-500"
+                  className="mt-0.5 rounded border-card-border text-rose-600 focus:ring-rose-500 cursor-pointer"
                 />
-                <span className="text-foreground font-semibold leading-relaxed">
-                  I confirm that I want to archive and permanently delete {count === 1 ? 'this completed release record' : `these ${count} completed release records`}. Underlying tasks and projects remain untouched.
+                <span className="text-[11px] text-foreground font-semibold leading-relaxed">
+                  I confirm the permanent hard deletion of the selected release records. All original developer tasks, projects, and users remain intact.
                 </span>
               </label>
             </div>
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between px-6 py-4 border-t border-card-border bg-card/70">
-            <div className="text-xs text-muted-foreground">
-              {processingState === 'archiving' && (
-                <span className="flex items-center gap-1.5 text-primary font-bold">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  1/2 Sending email archive...
-                </span>
-              )}
-              {processingState === 'deleting' && (
-                <span className="flex items-center gap-1.5 text-rose-500 font-bold">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  2/2 Purging database records...
-                </span>
-              )}
-            </div>
+          <div className="flex items-center justify-between px-6 py-4 border-t border-card-border bg-card/60">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={processingState !== 'idle'}
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
 
-            <div className="flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={processingState !== 'idle'}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleExecuteDelete}
-                disabled={!confirmedCheckbox || processingState !== 'idle' || (smtpStatus !== null && !smtpStatus.configured && !cachedArchiveResult)}
-                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-500 transition-all cursor-pointer disabled:opacity-50 shadow-md shadow-rose-600/20"
-              >
-                {processingState !== 'idle' ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Processing...</span>
-                  </>
-                ) : cachedArchiveResult ? (
-                  <>
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    <span>Retry Purging Records ({count})</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="h-3.5 w-3.5" />
-                    <span>Archive & Delete ({count})</span>
-                  </>
-                )}
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={!canProceed || processingState !== 'idle'}
+              onClick={handleExecuteDelete}
+              className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all cursor-pointer shadow-lg shadow-rose-600/25 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {processingState === 'deleting' ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>Deleting Records...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Hard Delete {count} Record{count === 1 ? '' : 's'}</span>
+                </>
+              )}
+            </button>
           </div>
         </motion.div>
       </div>
