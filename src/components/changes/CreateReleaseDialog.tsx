@@ -17,22 +17,27 @@ import {
   Sparkles
 } from 'lucide-react';
 import { dbService } from '@/services/dbService';
-import { Project, ProjectChangeChecklist, getChecklistPoints } from '@/types';
+import { Project, ProjectChangeChecklist, ProductionRelease, ReleaseType, getChecklistPoints } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
 import toast from 'react-hot-toast';
 
 interface CreateReleaseDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  defaultReleaseType?: ReleaseType;
+  parentRelease?: ProductionRelease | null;
   onSuccess?: (releaseId: string) => void;
 }
 
 export default function CreateReleaseDialog({
   isOpen,
   onClose,
+  defaultReleaseType = 'Production',
+  parentRelease = null,
   onSuccess
 }: CreateReleaseDialogProps) {
   const { user } = useAuth();
+  const [releaseType, setReleaseType] = useState<ReleaseType>(defaultReleaseType);
   const [releaseName, setReleaseName] = useState('');
   const [releaseDate, setReleaseDate] = useState('');
   const [availableChecklists, setAvailableChecklists] = useState<ProjectChangeChecklist[]>([]);
@@ -47,6 +52,9 @@ export default function CreateReleaseDialog({
   useEffect(() => {
     if (isOpen) {
       setErrorMessage(null);
+      const effectiveType = parentRelease?.releaseType || defaultReleaseType;
+      setReleaseType(effectiveType);
+
       const today = new Date();
       const yyyy = today.getFullYear();
       const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -54,13 +62,19 @@ export default function CreateReleaseDialog({
       const formattedDate = `${yyyy}-${mm}-${dd}`;
       setReleaseDate(formattedDate);
 
-      // Default name formatted with today's date e.g. "Production Release – 24 November 2026"
       const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-      setReleaseName(`Production Release – ${today.getDate()} ${monthNames[today.getMonth()]} ${today.getFullYear()}`);
-      setSelectedIds(new Set());
+      
+      if (parentRelease) {
+        setReleaseName(`Follow-up ${effectiveType} Release – ${parentRelease.name.replace(/^(Follow-up\s+)?(UAT|Production|Hotfix)\s+Release\s*–?\s*/i, '')}`);
+        setSelectedIds(new Set(parentRelease.changeChecklistIds));
+      } else {
+        setReleaseName(`${effectiveType} Release – ${today.getDate()} ${monthNames[today.getMonth()]} ${today.getFullYear()}`);
+        setSelectedIds(new Set());
+      }
+
       setSelectedProjectFilter('all');
 
-      // Fetch projects & available checklists
+      // Fetch projects & checklists
       setLoading(true);
       Promise.all([
         dbService.getProjects(),
@@ -68,23 +82,54 @@ export default function CreateReleaseDialog({
       ])
         .then(([projs, checklists]) => {
           setProjects(projs);
-          // Only show changes that are Available for Release
-          const available = checklists.filter(c => c.status === 'Available for Release');
-          setAvailableChecklists(available);
+          setAvailableChecklists(checklists);
         })
         .catch((err) => {
           console.error('Failed to load release data:', err);
-          toast.error('Failed to load available change checklists');
+          toast.error('Failed to load change checklists');
         })
         .finally(() => setLoading(false));
     }
-  }, [isOpen]);
+  }, [isOpen, defaultReleaseType, parentRelease]);
 
-  // Filter checklists by selected project
+  // Filter checklists according to releaseType & project
+  const eligibleChecklists = useMemo(() => {
+    if (parentRelease) {
+      const parentIds = new Set(parentRelease.changeChecklistIds);
+      return availableChecklists.filter(c => c.id && parentIds.has(c.id));
+    }
+
+    return availableChecklists.filter(c => {
+      if (releaseType === 'UAT') {
+        return (
+          c.status === 'Available for UAT' ||
+          c.status === 'Available for Release' ||
+          c.status === 'Failed in UAT – Developer Action Required' ||
+          c.status === 'Rejected by QA'
+        );
+      } else if (releaseType === 'Production') {
+        return (
+          c.status === 'UAT Approved' ||
+          c.status === 'Available for Production' ||
+          c.status === 'Available for Release' ||
+          c.status === 'Failed in Production – Developer Action Required'
+        );
+      } else if (releaseType === 'Hotfix') {
+        return (
+          c.status === 'Available for Hotfix' ||
+          c.status === 'Failed in Hotfix – Developer Action Required' ||
+          c.status === 'Available for Release' ||
+          c.isHotfix === true
+        );
+      }
+      return false;
+    });
+  }, [availableChecklists, releaseType, parentRelease]);
+
   const filteredChecklists = useMemo(() => {
-    if (selectedProjectFilter === 'all') return availableChecklists;
-    return availableChecklists.filter(c => c.projectId === selectedProjectFilter);
-  }, [availableChecklists, selectedProjectFilter]);
+    if (selectedProjectFilter === 'all') return eligibleChecklists;
+    return eligibleChecklists.filter(c => c.projectId === selectedProjectFilter);
+  }, [eligibleChecklists, selectedProjectFilter]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -129,7 +174,7 @@ export default function CreateReleaseDialog({
     }
 
     if (!releaseDate) {
-      const msg = 'Please choose a Production Release Date';
+      const msg = 'Please choose a Release Date';
       setErrorMessage(msg);
       toast.error(msg);
       return;
@@ -145,20 +190,23 @@ export default function CreateReleaseDialog({
 
     setSubmitting(true);
     try {
-      const releaseId = await dbService.createProductionRelease({
+      const releaseId = await dbService.createRelease({
         name: cleanName,
         releaseDate,
+        releaseType,
         changeChecklistIds: idsArray,
         createdBy: user.email.toLowerCase(),
-        createdByName: user.displayName || user.email.split('@')[0]
+        createdByName: user.displayName || user.email.split('@')[0],
+        parentReleaseId: parentRelease?.id || null,
+        isFollowUp: Boolean(parentRelease)
       });
 
-      toast.success(`Production release created with ${idsArray.length} project change(s)!`);
+      toast.success(`${releaseType} release created with ${idsArray.length} project change(s)!`);
       if (onSuccess) onSuccess(releaseId);
       onClose();
     } catch (err: any) {
       console.error('Failed to create release:', err);
-      const errMsg = err?.message || 'Failed to create production release';
+      const errMsg = err?.message || 'Failed to create release';
       setErrorMessage(errMsg);
       toast.error(errMsg);
     } finally {
@@ -185,13 +233,25 @@ export default function CreateReleaseDialog({
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4.5 border-b border-card-border bg-card/60">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+                releaseType === 'UAT' ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400' :
+                releaseType === 'Hotfix' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' :
+                'bg-purple-500/10 border-purple-500/20 text-purple-400'
+              }`}>
                 <Layers className="h-5 w-5" />
               </div>
               <div>
-                <h2 className="text-base font-bold text-foreground">Create Production Release</h2>
+                <h2 className="text-base font-bold text-foreground">
+                  {parentRelease ? `Create Follow-up ${releaseType} Release` : `Create ${releaseType} Release`}
+                </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Group available project changes into a dated production release for QA verification
+                  {parentRelease 
+                    ? `Retry release for ${parentRelease.name} – Includes only failed verification points`
+                    : releaseType === 'UAT'
+                      ? 'Package ready changes for comprehensive UAT testing & QA verification'
+                      : releaseType === 'Production'
+                        ? 'Package fully UAT-approved changes for production deployment & verification'
+                        : 'Package urgent hotfix changes for dedicated hotfix QA & expedited release'}
                 </p>
               </div>
             </div>
@@ -210,40 +270,116 @@ export default function CreateReleaseDialog({
               <div className="p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 flex items-start gap-2.5 text-destructive text-xs">
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <div className="space-y-0.5">
-                  <p className="font-bold">Cannot Create Production Release</p>
+                  <p className="font-bold">Cannot Create Release</p>
                   <p className="text-[11px] text-foreground font-medium leading-relaxed">{errorMessage}</p>
                 </div>
+              </div>
+            )}
+
+            {/* Release Type Selection (disabled if follow-up) */}
+            {!parentRelease && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                  <Layers className="h-3.5 w-3.5 text-primary" />
+                  Release Type <span className="text-destructive">*</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReleaseType('UAT');
+                      const today = new Date();
+                      const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+                      setReleaseName(`UAT Release – ${today.getDate()} ${monthNames[today.getMonth()]} ${today.getFullYear()}`);
+                      setSelectedIds(new Set());
+                    }}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      releaseType === 'UAT'
+                        ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-400 shadow-xs'
+                        : 'bg-accent/20 border-card-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    UAT Release
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReleaseType('Production');
+                      const today = new Date();
+                      const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+                      setReleaseName(`Production Release – ${today.getDate()} ${monthNames[today.getMonth()]} ${today.getFullYear()}`);
+                      setSelectedIds(new Set());
+                    }}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      releaseType === 'Production'
+                        ? 'bg-purple-500/15 border-purple-500/40 text-purple-400 shadow-xs'
+                        : 'bg-accent/20 border-card-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Production Release
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReleaseType('Hotfix');
+                      const today = new Date();
+                      const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+                      setReleaseName(`Hotfix Release – ${today.getDate()} ${monthNames[today.getMonth()]} ${today.getFullYear()}`);
+                      setSelectedIds(new Set());
+                    }}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      releaseType === 'Hotfix'
+                        ? 'bg-rose-500/15 border-rose-500/40 text-rose-400 shadow-xs'
+                        : 'bg-accent/20 border-card-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Hotfix Release
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Follow-up Banner */}
+            {parentRelease && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs text-amber-400 space-y-1">
+                <p className="font-bold flex items-center gap-1.5">
+                  <Sparkles className="h-4 w-4" />
+                  Follow-up Release for: {parentRelease.name}
+                </p>
+                <p className="text-[11px] text-foreground font-medium pl-5.5">
+                  This release automatically includes only the failed verification points that have been marked ready for retesting by developers. Previously passed points are excluded from retesting.
+                </p>
               </div>
             )}
 
             {/* 1. Release Name */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                <FileText className="h-3.5 w-3.5 text-purple-400" />
+                <FileText className="h-3.5 w-3.5 text-primary" />
                 Release Name <span className="text-destructive">*</span>
               </label>
               <input
                 type="text"
                 value={releaseName}
                 onChange={(e) => setReleaseName(e.target.value)}
-                placeholder="e.g. Production Release – 24 November 2026"
+                placeholder={`e.g. ${releaseType} Release – 24 November 2026`}
                 required
-                className="w-full px-3.5 py-2.5 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs font-medium placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-purple-500/40 transition-all"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs font-medium placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
               />
             </div>
 
-            {/* 2. Production Release Date */}
+            {/* 2. Release Date */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                <Calendar className="h-3.5 w-3.5 text-purple-400" />
-                Production Release Date <span className="text-destructive">*</span>
+                <Calendar className="h-3.5 w-3.5 text-primary" />
+                Release Date <span className="text-destructive">*</span>
               </label>
               <input
                 type="date"
                 value={releaseDate}
                 onChange={(e) => setReleaseDate(e.target.value)}
                 required
-                className="w-full px-3.5 py-2.5 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/40 transition-all"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-accent/30 border border-card-border text-foreground text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
               />
             </div>
 
@@ -252,14 +388,18 @@ export default function CreateReleaseDialog({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                    <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+                    <Sparkles className="h-3.5 w-3.5 text-primary" />
                     Select Project Changes <span className="text-destructive">*</span>
                     <span className="text-[11px] font-normal text-muted-foreground">
                       ({selectedIds.size} selected)
                     </span>
                   </label>
                   <p className="text-[11px] text-muted-foreground">
-                    Only changes with status "Available for Release" are shown
+                    {releaseType === 'Production' 
+                      ? 'Only changes approved by UAT are eligible for Production Releases'
+                      : releaseType === 'UAT'
+                        ? 'Showing changes available for UAT verification'
+                        : 'Showing urgent fixes available for Hotfix verification'}
                   </p>
                 </div>
 

@@ -32,17 +32,21 @@ interface ReleaseVerificationViewProps {
   release: ProductionRelease;
   onUpdate?: () => void;
   onBack?: () => void;
+  onCreateFollowUp?: (release: ProductionRelease) => void;
 }
 
 export default function ReleaseVerificationView({
   release,
   onUpdate,
-  onBack
+  onBack,
+  onCreateFollowUp
 }: ReleaseVerificationViewProps) {
   const { user } = useAuth();
   const [expandedItems, setExpandedItems] = useState<Set<string>>(
     new Set(release.items.map(it => it.changeChecklistId))
   );
+
+  const releaseType = release.releaseType || 'Production';
 
   // Rejection Dialog State
   const [rejectingItem, setRejectingItem] = useState<ReleaseChangeItem | null>(null);
@@ -207,9 +211,18 @@ export default function ReleaseVerificationView({
                 &larr; All Releases
               </button>
             )}
-            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-purple-500/15 text-purple-400 border border-purple-500/25">
-              Production Release
+            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
+              releaseType === 'UAT' ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/25' :
+              releaseType === 'Hotfix' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/25' :
+              'bg-purple-500/15 text-purple-400 border border-purple-500/25'
+            }`}>
+              {releaseType} Release
             </span>
+            {release.isFollowUp && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-amber-500/15 text-amber-400 border border-amber-500/25">
+                Follow-up / Retry
+              </span>
+            )}
             <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
               release.status === 'Completed' ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/25' :
               release.status === 'Partially Rejected' ? 'bg-rose-500/15 text-rose-500 border border-rose-500/25' :
@@ -236,23 +249,37 @@ export default function ReleaseVerificationView({
           </div>
         </div>
 
-        {/* Quick Stats Pill */}
-        <div className="flex items-center gap-2 self-start md:self-center">
-          <div className="px-3 py-1.5 rounded-xl bg-card border border-card-border text-center">
-            <p className="text-[10px] text-muted-foreground font-bold uppercase">Total Changes</p>
-            <p className="text-sm font-black text-foreground">{totalItems}</p>
-          </div>
-          <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
-            <p className="text-[10px] text-emerald-500 font-bold uppercase">Passed</p>
-            <p className="text-sm font-black text-emerald-500">{completedCount}</p>
-          </div>
-          <div className="px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center">
-            <p className="text-[10px] text-rose-500 font-bold uppercase">Rejected</p>
-            <p className="text-sm font-black text-rose-500">{rejectedCount}</p>
-          </div>
-          <div className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
-            <p className="text-[10px] text-amber-500 font-bold uppercase">Pending</p>
-            <p className="text-sm font-black text-amber-500">{pendingCount}</p>
+        {/* Quick Stats & Follow-up Action */}
+        <div className="flex items-center gap-3 self-start md:self-center flex-wrap">
+          {onCreateFollowUp && (release.status === 'Partially Rejected' || release.status === 'Rejected' || rejectedCount > 0) && (
+            <button
+              type="button"
+              onClick={() => onCreateFollowUp(release)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90 transition-all cursor-pointer shadow-md shadow-primary/20"
+              title="Create a follow-up release containing only the failed verification points"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>Create Follow-up Release</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-2">
+            <div className="px-3 py-1.5 rounded-xl bg-card border border-card-border text-center">
+              <p className="text-[10px] text-muted-foreground font-bold uppercase">Total</p>
+              <p className="text-sm font-black text-foreground">{totalItems}</p>
+            </div>
+            <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+              <p className="text-[10px] text-emerald-500 font-bold uppercase">Passed</p>
+              <p className="text-sm font-black text-emerald-500">{completedCount}</p>
+            </div>
+            <div className="px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-center">
+              <p className="text-[10px] text-rose-500 font-bold uppercase">Rejected</p>
+              <p className="text-sm font-black text-rose-500">{rejectedCount}</p>
+            </div>
+            <div className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-center">
+              <p className="text-[10px] text-amber-500 font-bold uppercase">Pending</p>
+              <p className="text-sm font-black text-amber-500">{pendingCount}</p>
+            </div>
           </div>
         </div>
       </div>

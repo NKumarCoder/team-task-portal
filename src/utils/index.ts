@@ -108,6 +108,59 @@ export function formatTimeAgo(dateString: string): string {
   }
 }
 
+export interface Release7DayEligibility {
+  isTerminal: boolean;
+  isEligible: boolean;
+  daysRemaining: number;
+  eligibleDateStr: string;
+  terminalDateStr: string;
+}
+
+/**
+ * Calculates 7-day retention eligibility for release hard deletion.
+ * Only terminal records (Completed, Partially Rejected, Rejected) are eligible after 7 days from terminal state.
+ */
+export function checkRelease7DayEligibility(release: {
+  status: string;
+  terminalDate?: string | null;
+  createdDate: string;
+}): Release7DayEligibility {
+  const isTerminal = 
+    release.status === 'Completed' || 
+    release.status === 'Partially Rejected' || 
+    release.status === 'Rejected';
+
+  if (!isTerminal) {
+    return {
+      isTerminal: false,
+      isEligible: false,
+      daysRemaining: 7,
+      eligibleDateStr: 'Active (Not terminal)',
+      terminalDateStr: 'Active',
+    };
+  }
+
+  const baseDate = release.terminalDate ? new Date(release.terminalDate) : new Date(release.createdDate);
+  const baseTime = isNaN(baseDate.getTime()) ? Date.now() : baseDate.getTime();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  const eligibleTime = baseTime + sevenDaysMs;
+  const nowTime = Date.now();
+  const diffMs = eligibleTime - nowTime;
+
+  const isEligible = diffMs <= 0;
+  const daysRemaining = isEligible ? 0 : Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+  const eligibleDateStr = formatDate(new Date(eligibleTime).toISOString());
+  const terminalDateStr = formatDate(new Date(baseTime).toISOString());
+
+  return {
+    isTerminal: true,
+    isEligible,
+    daysRemaining,
+    eligibleDateStr,
+    terminalDateStr,
+  };
+}
+
 export interface TaskEmailRecipients {
   to: string[];
   cc: string[];

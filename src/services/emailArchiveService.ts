@@ -173,6 +173,7 @@ export function generateReleaseArchiveHtml(
 export async function checkSmtpStatus(): Promise<{
   configured: boolean;
   connected: boolean;
+  host?: string;
   missing?: string[];
   error?: string;
   message?: string;
@@ -183,6 +184,7 @@ export async function checkSmtpStatus(): Promise<{
     return {
       configured: data.configured ?? false,
       connected: data.connected ?? false,
+      host: data.host,
       missing: data.missing,
       error: data.error,
       message: data.message

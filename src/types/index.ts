@@ -282,6 +282,15 @@ export interface TodoItem {
 }
 
 // Project Change Checklist & QA Verification System
+export type ReleaseType = 'UAT' | 'Production' | 'Hotfix';
+
+export type ReleaseLifecycleStatus = 
+  | 'Pending QA'
+  | 'In QA'
+  | 'Partially Rejected'
+  | 'Rejected'
+  | 'Completed';
+
 export interface ChangeChecklistItem {
   id: string; // e.g. "item-1" or generated id
   text: string; // e.g. "TASK-000154 – Supplier response mapping fix"
@@ -297,6 +306,30 @@ export interface ChangeChecklistItem {
   completedByName?: string; // Developer display name
   completedDate?: string; // ISO string
   comment?: string; // Developer comment
+  
+  // Point-wise QA Lifecycle across release phases
+  uatStatus?: 'Pending' | 'Passed' | 'Failed';
+  uatQaComment?: string;
+  uatQaUser?: string;
+  uatQaUserName?: string;
+  uatQaDate?: string;
+  
+  prodStatus?: 'Pending' | 'Passed' | 'Failed';
+  prodQaComment?: string;
+  prodQaUser?: string;
+  prodQaUserName?: string;
+  prodQaDate?: string;
+
+  hotfixStatus?: 'Pending' | 'Passed' | 'Failed';
+  hotfixQaComment?: string;
+  hotfixQaUser?: string;
+  hotfixQaUserName?: string;
+  hotfixQaDate?: string;
+
+  // Re-testing loop flags
+  needsDeveloperAction?: boolean;
+  developerRetestReady?: boolean;
+  developerRetestComment?: string;
 }
 
 export interface VerificationChecklistItem {
@@ -306,6 +339,7 @@ export interface VerificationChecklistItem {
   qaUser?: string;
   qaUserName?: string;
   qaDate?: string;
+  qaComment?: string;
   // Preserved task references & developer info from change checklist:
   type?: 'task' | 'manual';
   taskId?: string;
@@ -319,24 +353,43 @@ export interface VerificationChecklistItem {
   developerCompletedByName?: string;
   developerCompletedDate?: string;
   developerComment?: string;
+
+  // Point-wise retry / retest flags
+  needsDeveloperAction?: boolean;
+  developerRetestReady?: boolean;
+  developerRetestComment?: string;
 }
 
 export interface ChangeRejectionRecord {
   releaseId: string;
   releaseName: string;
+  releaseType?: ReleaseType;
   rejectedBy: string; // Email
   rejectedByName: string; // Display name
   rejectedDate: string; // ISO string
   reason: string; // Mandatory explanation of failure
   failedPointIndex?: number; // Optional index of the specific failed point
   failedPointText?: string; // Optional text of the failed point
+  failedPointId?: string; // Specific item ID that failed
 }
 
 export type ChangeChecklistStatus = 
+  | 'Available for UAT'
+  | 'Included in UAT'
+  | 'Failed in UAT – Developer Action Required'
+  | 'UAT Approved' // Fully approved in UAT, eligible for Production
+  | 'Available for Production' // Same as UAT Approved
+  | 'Included in Production'
+  | 'Failed in Production – Developer Action Required'
+  | 'Completed'
+  | 'Available for Hotfix'
+  | 'Included in Hotfix'
+  | 'Failed in Hotfix – Developer Action Required'
+  | 'Hotfix Completed'
+  // Backward compatibility aliases:
   | 'Available for Release'
   | 'Included in Release'
-  | 'Rejected by QA'
-  | 'Completed';
+  | 'Rejected by QA';
 
 export interface ProjectChangeChecklist {
   id?: string;
@@ -355,6 +408,13 @@ export interface ProjectChangeChecklist {
   updatedDate: string; // ISO String
   currentReleaseId?: string | null;
   currentReleaseName?: string | null;
+  currentReleaseType?: ReleaseType | null;
+  uatReleaseId?: string | null;
+  uatReleaseName?: string | null;
+  uatApprovedDate?: string | null;
+  productionReleaseId?: string | null;
+  productionReleaseName?: string | null;
+  isHotfix?: boolean;
   rejectionHistory?: ChangeRejectionRecord[];
 }
 
@@ -378,27 +438,38 @@ export interface ReleaseChangeItem {
 
 export interface ProductionRelease {
   id?: string;
-  name: string; // e.g. "Production Release – 24 November 2026"
+  name: string; // e.g. "UAT Release – 25 November 2026" or "Production Release – 25 November 2026"
+  releaseType?: ReleaseType; // Default 'Production' if omitted on legacy records
   releaseDate: string; // YYYY-MM-DD
-  status: 'In QA' | 'Completed' | 'Partially Rejected';
+  status: ReleaseLifecycleStatus;
   changeChecklistIds: string[];
   items: ReleaseChangeItem[];
   createdBy: string;
   createdByName: string;
   createdDate: string; // ISO String
+  
+  // Follow-up / Retry relationships:
+  parentReleaseId?: string | null;
+  parentReleaseName?: string | null;
+  isFollowUp?: boolean;
+  followUpReleaseIds?: string[];
+
+  // 7-Day cleanup retention tracking:
+  terminalDate?: string | null; // Set when status becomes Completed, Partially Rejected, or Rejected
 }
 
 export interface ReleaseDeletionLog {
   id?: string;
   operationId: string;
+  releaseType?: string;
   deletedRecordIds: string[];
   releaseNames: string[];
   deletedBy: string;
   deletedByName: string;
   deletionDate: string; // ISO String
   recordCount: number;
-  emailRecipients: string[];
-  emailSubject: string;
+  emailRecipients?: string[];
+  emailSubject?: string;
   emailMessageId?: string;
   reason?: string;
 }

@@ -22,7 +22,8 @@ import {
   ExternalLink,
   MessageSquare,
   Square,
-  CheckSquare
+  CheckSquare,
+  RotateCcw
 } from 'lucide-react';
 import { ProjectChangeChecklist, ChangeChecklistItem, getChecklistItems, getChecklistPoints } from '@/types';
 import { dbService } from '@/services/dbService';
@@ -212,7 +213,7 @@ export default function ChangeDetailModal({
 
     setIsDeletingChange(true);
     try {
-      await dbService.deleteProjectChangeChecklist(checklist.id);
+      await dbService.deleteProjectChangeChecklist(checklist.id, user?.email, user?.role);
       toast.success('Project change checklist deleted');
       setIsDeleteModalOpen(false);
       onClose();
@@ -556,6 +557,85 @@ export default function ChangeDetailModal({
                               {isCompleted && item.completedByName && (
                                 <p className="text-[10px] text-emerald-500 font-medium">
                                   Completed by {item.completedByName} {item.completedDate ? `on ${formatDate(item.completedDate)}` : ''}
+                                </p>
+                              )}
+
+                              {/* QA Phase Badges */}
+                              <div className="flex items-center gap-2 flex-wrap pt-0.5">
+                                {item.uatStatus === 'Passed' && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/25 px-2 py-0.5 rounded">
+                                    <CheckCircle2 className="h-3 w-3" />
+                                    <span>Passed in UAT</span>
+                                  </span>
+                                )}
+                                {item.prodStatus === 'Passed' && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded">
+                                    <CheckCircle2 className="h-3 w-3" />
+                                    <span>Passed in Production</span>
+                                  </span>
+                                )}
+                                {item.needsDeveloperAction && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/25 px-2 py-0.5 rounded">
+                                    <AlertCircle className="h-3 w-3" />
+                                    <span>Failed in QA – Developer Action Required</span>
+                                  </span>
+                                )}
+                                {item.developerRetestReady && (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/25 px-2 py-0.5 rounded">
+                                    <RotateCcw className="h-3 w-3" />
+                                    <span>Ready for Retest</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* QA Failure Reason & Retest Action for this specific point */}
+                              {item.needsDeveloperAction && (
+                                <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-xs text-rose-400 space-y-2 mt-1">
+                                  <p className="font-bold text-[11px] flex items-center gap-1">
+                                    <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                                    QA Rejection Note: {item.uatQaComment || item.prodQaComment || 'Requires correction'}
+                                  </p>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      placeholder="Add developer fix comment and mark ready for retest..."
+                                      id={`retest-input-${item.id}`}
+                                      className="flex-1 px-2.5 py-1 rounded bg-background/60 border border-card-border text-foreground text-[11px] focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        if (!checklist.id || !user) return;
+                                        const inputEl = document.getElementById(`retest-input-${item.id}`) as HTMLInputElement;
+                                        const comment = inputEl?.value.trim() || 'Fixed implementation; ready for retest.';
+                                        try {
+                                          await dbService.markPointReadyForRetest({
+                                            checklistId: checklist.id,
+                                            pointId: item.id,
+                                            comment,
+                                            developerEmail: user.email,
+                                            developerName: user.displayName || user.email.split('@')[0]
+                                          });
+                                          toast.success('Point marked ready for retest in follow-up release!');
+                                          if (onChecklistUpdated) {
+                                            const updatedItems = items.map(it => it.id === item.id ? { ...it, needsDeveloperAction: false, developerRetestReady: true, developerRetestComment: comment } : it);
+                                            onChecklistUpdated({ ...checklist, items: updatedItems });
+                                          }
+                                        } catch (err: any) {
+                                          toast.error(err?.message || 'Failed to update retest status');
+                                        }
+                                      }}
+                                      className="px-2.5 py-1 rounded bg-rose-500 hover:bg-rose-600 text-white font-bold text-[11px] transition-colors cursor-pointer shrink-0"
+                                    >
+                                      Mark Ready for Retest
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {item.developerRetestComment && (
+                                <p className="text-[11px] text-amber-400/90 italic pl-1">
+                                  Retest note: "{item.developerRetestComment}"
                                 </p>
                               )}
 

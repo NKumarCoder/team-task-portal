@@ -32,7 +32,7 @@ import {
   productionReleasesCollection,
   releaseDeletionLogsCollection
 } from '../firebase/firestore';
-import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User, ProjectChangeChecklist, ProductionRelease, ReleaseChangeItem, VerificationChecklistItem, ChangeRejectionRecord, ChangeChecklistItem, ReleaseDeletionLog, getChecklistPoints, getChecklistItems, getReleaseItemPoints } from '../types';
+import { Task, Member, PortalSettings, MonthlyReport, TaskStatus, TaskStatusHistory, Comment, NotificationItem, ActivityLog, Attachment, Subtask, Project, TaskAssignee, TodoItem, RejectionRecord, UserRole, TaskWatcher, NotificationPreferences, DEFAULT_NOTIFICATION_PREFERENCES, User, ProjectChangeChecklist, ChangeChecklistStatus, ProductionRelease, ReleaseType, ReleaseLifecycleStatus, ReleaseChangeItem, VerificationChecklistItem, ChangeRejectionRecord, ChangeChecklistItem, ReleaseDeletionLog, getChecklistPoints, getChecklistItems, getReleaseItemPoints } from '../types';
 import { formatDate, getTaskAssignees, getTaskAssigneeIds, getTaskAssigneeNames, getTaskEmailRecipients, sanitizeFirestorePayload } from '../utils';
 import { canTransitionToStatus, isSuperAdminEmail } from '../utils/permissions';
 import { MAX_ASSIGNEES } from '../constants';
@@ -2976,6 +2976,52 @@ class DBService {
     }
   }
 
+  async getProjectChangeChecklist(id: string): Promise<ProjectChangeChecklist | null> {
+    try {
+      const docRef = doc(db, 'projectChangeChecklists', id);
+      const snapPromise = getDoc(docRef).then((snap) => {
+        if (!snap.exists()) return null;
+        return { ...snap.data(), id: snap.id } as ProjectChangeChecklist;
+      });
+      return await withTimeout(snapPromise, 3500, null as any);
+    } catch (err) {
+      console.error(`[dbService] Error getting checklist with id ${id}:`, err);
+      return null;
+    }
+  }
+
+  subscribeProjectChangeChecklist(id: string, callback: (checklist: ProjectChangeChecklist | null) => void) {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      callback(null);
+    }, 4000);
+
+    try {
+      const docRef = doc(db, 'projectChangeChecklists', id);
+      unsubscribe = onSnapshot(docRef, (docSnap) => {
+        clearTimeout(timer);
+        if (!docSnap.exists()) {
+          callback(null);
+        } else {
+          callback({ ...docSnap.data(), id: docSnap.id } as ProjectChangeChecklist);
+        }
+      }, (error) => {
+        console.error(`[dbService] Checklist subscription error for ${id}:`, error);
+        clearTimeout(timer);
+        callback(null);
+      });
+    } catch (err) {
+      console.error(`[dbService] Subscription setup failed for checklist ${id}:`, err);
+      clearTimeout(timer);
+      callback(null);
+    }
+
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }
+
   subscribeProjectChangeChecklists(callback: (checklists: ProjectChangeChecklist[]) => void) {
     let unsubscribe = () => {};
     const timer = setTimeout(() => {
@@ -3188,7 +3234,7 @@ class DBService {
     await updateDoc(docRef, sanitizeFirestorePayload(payload));
   }
 
-  async deleteProjectChangeChecklist(id: string): Promise<void> {
+  async deleteProjectChangeChecklist(id: string, userEmail?: string, userRole?: string): Promise<void> {
     const docRef = doc(db, 'projectChangeChecklists', id);
     const snap = await getDoc(docRef);
     if (!snap.exists()) {
@@ -3196,10 +3242,20 @@ class DBService {
     }
 
     const data = snap.data() as ProjectChangeChecklist;
+
+    // Strict role & creator check if credentials provided
+    if (userEmail && userRole) {
+      const isPrivileged = userRole === 'SuperAdmin' || userRole === 'Admin';
+      const isCreator = data.createdBy && data.createdBy.toLowerCase() === userEmail.toLowerCase();
+      if (!isPrivileged && !isCreator) {
+        throw new Error("Access denied: You do not have permission to delete this checklist.");
+      }
+    }
+
     // Strict safeguard: allow deletion ONLY if unreleased and never included in a release
     const hasReleaseHistory = (data.rejectionHistory && data.rejectionHistory.length > 0) || Boolean(data.currentReleaseId);
     if (data.status === 'Included in Release' || data.status === 'Completed' || hasReleaseHistory) {
-      throw new Error("Cannot delete: This change is part of a production release or has release history. Deletion is only allowed for unreleased entries.");
+      throw new Error("Cannot delete: This change checklist is included in a production release or has release history. Deletion is only allowed for unreleased entries.");
     }
 
     await deleteDoc(docRef);
@@ -3502,12 +3558,16 @@ class DBService {
     };
   }
 
-  async createProductionRelease(data: {
+  async createRelease(data: {
     name: string;
     releaseDate: string;
+    releaseType: ReleaseType;
     changeChecklistIds: string[];
     createdBy: string;
     createdByName: string;
+    parentReleaseId?: string | null;
+    isFollowUp?: boolean;
+    pointSelectionMap?: Record<string, string[]>; // checklistId -> array of point IDs
   }): Promise<string> {
     const cleanName = (data.name || '').trim();
     if (!cleanName) {
@@ -3518,6 +3578,8 @@ class DBService {
     if (!cleanReleaseDate) {
       throw new Error("Release Date is mandatory.");
     }
+
+    const releaseType: ReleaseType = data.releaseType || 'Production';
 
     if (!data.changeChecklistIds || data.changeChecklistIds.length === 0) {
       throw new Error("Please select at least one available project change.");
@@ -3539,23 +3601,76 @@ class DBService {
       if (!change) {
         throw new Error(`The selected change checklist with ID "${id}" no longer exists in the database.`);
       }
-      if (change.status !== 'Available for Release') {
-        throw new Error(`The change checklist "${change.title}" is not available for release (Current status: "${change.status}"). Only changes with status "Available for Release" can be included.`);
+
+      // Check eligibility according to release type
+      if (releaseType === 'UAT') {
+        const uatEligible = 
+          change.status === 'Available for UAT' || 
+          change.status === 'Available for Release' ||
+          change.status === 'Failed in UAT – Developer Action Required' ||
+          change.status === 'Rejected by QA';
+        if (!uatEligible && !data.isFollowUp) {
+          throw new Error(`The change "${change.title}" is not available for UAT (Current status: "${change.status}").`);
+        }
+      } else if (releaseType === 'Production') {
+        const prodEligible = 
+          change.status === 'UAT Approved' || 
+          change.status === 'Available for Production' ||
+          change.status === 'Available for Release' ||
+          change.status === 'Failed in Production – Developer Action Required';
+        if (!prodEligible && !data.isFollowUp) {
+          throw new Error(`The change "${change.title}" cannot be included in a Production Release because it has not been approved in UAT (Current status: "${change.status}").`);
+        }
+      } else if (releaseType === 'Hotfix') {
+        const hotfixEligible = 
+          change.status === 'Available for Hotfix' || 
+          change.status === 'Failed in Hotfix – Developer Action Required' ||
+          change.status === 'Available for Release' ||
+          change.isHotfix === true;
+        if (!hotfixEligible && !data.isFollowUp) {
+          throw new Error(`The change "${change.title}" is not available for Hotfix release (Current status: "${change.status}").`);
+        }
       }
-      if (change.currentReleaseId) {
-        throw new Error(`The change checklist "${change.title}" is already assigned to active release "${change.currentReleaseName || change.currentReleaseId}".`);
+
+      if (change.currentReleaseId && !data.isFollowUp) {
+        throw new Error(`The change "${change.title}" is already assigned to active release "${change.currentReleaseName || change.currentReleaseId}".`);
       }
       selected.push(change);
     }
 
     const now = new Date().toISOString();
 
-    // 2. Build clean release items with zero undefined properties
+    // 2. Build release items. If follow-up release, filter to include ONLY failed/retest points!
     const items: ReleaseChangeItem[] = selected.map(c => {
       const checklistItems = getChecklistItems(c);
-      const verificationList: VerificationChecklistItem[] = checklistItems.map((item, idx) => {
+      
+      // Determine which points to include
+      let pointsToInclude = checklistItems;
+      if (data.isFollowUp || data.parentReleaseId) {
+        if (data.pointSelectionMap && data.pointSelectionMap[c.id!]) {
+          const allowedIds = new Set(data.pointSelectionMap[c.id!]);
+          pointsToInclude = checklistItems.filter(p => allowedIds.has(p.id));
+        } else {
+          // By default for follow-up, only include points that failed or need developer action / retest
+          pointsToInclude = checklistItems.filter(p => {
+            if (releaseType === 'UAT') return p.uatStatus === 'Failed' || p.needsDeveloperAction || p.developerRetestReady;
+            if (releaseType === 'Production') return p.prodStatus === 'Failed' || p.needsDeveloperAction || p.developerRetestReady;
+            if (releaseType === 'Hotfix') return p.hotfixStatus === 'Failed' || p.needsDeveloperAction || p.developerRetestReady;
+            return p.status !== 'Completed';
+          });
+        }
+        // Fallback if none explicitly matched: include any points not marked Passed
+        if (pointsToInclude.length === 0) {
+          pointsToInclude = checklistItems.filter(p => {
+            const statusToCheck = releaseType === 'UAT' ? p.uatStatus : releaseType === 'Production' ? p.prodStatus : p.hotfixStatus;
+            return statusToCheck !== 'Passed';
+          });
+        }
+      }
+
+      const verificationList: VerificationChecklistItem[] = pointsToInclude.map((item, idx) => {
         const vItem: VerificationChecklistItem = {
-          id: `p-${idx + 1}`,
+          id: item.id || `p-${idx + 1}`,
           text: item.text,
           status: 'Pending',
           type: item.type,
@@ -3572,6 +3687,8 @@ class DBService {
         if (item.completedByName) vItem.developerCompletedByName = item.completedByName;
         if (item.completedDate) vItem.developerCompletedDate = item.completedDate;
         if (item.comment) vItem.developerComment = item.comment;
+        if (item.developerRetestComment) vItem.developerRetestComment = item.developerRetestComment;
+        if (item.developerRetestReady) vItem.developerRetestReady = item.developerRetestReady;
 
         return vItem;
       });
@@ -3587,7 +3704,6 @@ class DBService {
         developerEmail: c.createdBy || '',
         developerName: c.createdByName || '',
         points: verificationList,
-        // Backward compatibility
         changes: commonPoints,
         verificationItems: verificationList,
         status: 'Pending QA'
@@ -3599,38 +3715,49 @@ class DBService {
     const releasePayload: Omit<ProductionRelease, 'id'> = {
       name: cleanName,
       releaseDate: cleanReleaseDate,
+      releaseType,
       status: 'In QA',
       changeChecklistIds: uniqueIds,
       items,
       createdBy: data.createdBy,
       createdByName: data.createdByName,
-      createdDate: now
+      createdDate: now,
+      ...(data.parentReleaseId ? { parentReleaseId: data.parentReleaseId } : {}),
+      ...(data.isFollowUp ? { isFollowUp: true } : {})
     };
 
-    // Sanitize payload recursively to eliminate any undefined fields
     const sanitizedPayload = sanitizeFirestorePayload(releasePayload);
 
-    // Development-only diagnostics (safe metadata only)
-    if (process.env.NODE_ENV === 'development') {
-      console.log('[createProductionRelease] Validated & sanitized payload:', {
-        name: sanitizedPayload.name,
-        releaseDate: sanitizedPayload.releaseDate,
-        changeChecklistIds: sanitizedPayload.changeChecklistIds,
-        itemsCount: sanitizedPayload.items?.length
-      });
-    }
-
-    // 3. Perform atomic batch write for BOTH release creation and change status updates
+    // 3. Batch write for release creation & change checklist updates
     const batch = writeBatch(db);
     const releaseDocRef = doc(productionReleasesCollection);
     batch.set(releaseDocRef, sanitizedPayload);
 
+    // If follow-up, link to parent release
+    if (data.parentReleaseId) {
+      const parentRef = doc(db, 'productionReleases', data.parentReleaseId);
+      const parentSnap = await getDoc(parentRef);
+      if (parentSnap.exists()) {
+        const parentData = parentSnap.data() as ProductionRelease;
+        const currentFollowUps = parentData.followUpReleaseIds || [];
+        batch.update(parentRef, sanitizeFirestorePayload({
+          followUpReleaseIds: Array.from(new Set([...currentFollowUps, releaseDocRef.id]))
+        }));
+      }
+    }
+
+    const targetChecklistStatus = 
+      releaseType === 'UAT' ? 'Included in UAT' :
+      releaseType === 'Hotfix' ? 'Included in Hotfix' :
+      'Included in Production';
+
     for (const c of selected) {
       const checklistDoc = doc(db, 'projectChangeChecklists', c.id!);
       batch.update(checklistDoc, sanitizeFirestorePayload({
-        status: 'Included in Release',
+        status: targetChecklistStatus,
         currentReleaseId: releaseDocRef.id,
         currentReleaseName: cleanName,
+        currentReleaseType: releaseType,
         updatedDate: now
       }));
     }
@@ -3640,13 +3767,27 @@ class DBService {
     return releaseDocRef.id;
   }
 
+  async createProductionRelease(data: {
+    name: string;
+    releaseDate: string;
+    changeChecklistIds: string[];
+    createdBy: string;
+    createdByName: string;
+  }): Promise<string> {
+    return this.createRelease({
+      ...data,
+      releaseType: 'Production'
+    });
+  }
+
   async updateReleaseItemVerification(
     releaseId: string,
     checklistId: string,
     itemId: string,
     status: 'Pending' | 'Passed' | 'Failed',
     qaUser?: string,
-    qaUserName?: string
+    qaUserName?: string,
+    qaComment?: string
   ): Promise<void> {
     const releaseRef = doc(db, 'productionReleases', releaseId);
     const releaseSnap = await getDoc(releaseRef);
@@ -3669,6 +3810,7 @@ class DBService {
         status,
         qaUser: qaUser || v.qaUser,
         qaUserName: qaUserName || v.qaUserName,
+        qaComment: qaComment !== undefined ? qaComment : v.qaComment
       };
       if (status !== 'Pending') {
         updated.qaDate = now;
@@ -3696,6 +3838,7 @@ class DBService {
     if (!releaseSnap.exists()) throw new Error("Release not found");
 
     const releaseData = releaseSnap.data() as ProductionRelease;
+    const releaseType = releaseData.releaseType || 'Production';
     const items = [...releaseData.items];
     const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
 
@@ -3705,7 +3848,7 @@ class DBService {
     const currentPoints = getReleaseItemPoints(targetItem);
     const hasUnpassed = currentPoints.some(v => v.status !== 'Passed');
     if (hasUnpassed) {
-      throw new Error("All verification points must be marked 'Passed' before completing.");
+      throw new Error("All verification points in this release must be marked 'Passed' before completing.");
     }
 
     const now = new Date().toISOString();
@@ -3719,20 +3862,73 @@ class DBService {
     // Check if entire release is completed
     const allCompleted = items.every(it => it.status === 'Completed');
     const hasRejected = items.some(it => it.status === 'Rejected');
-    const newReleaseStatus: 'In QA' | 'Completed' | 'Partially Rejected' = allCompleted
+    const newReleaseStatus: ReleaseLifecycleStatus = allCompleted
       ? 'Completed'
       : hasRejected && items.every(it => it.status !== 'Pending QA')
       ? 'Partially Rejected'
       : releaseData.status;
 
-    await updateDoc(releaseRef, sanitizeFirestorePayload({ items, status: newReleaseStatus }));
+    const releaseUpdatePayload: any = { items, status: newReleaseStatus };
+    if (newReleaseStatus === 'Completed') {
+      releaseUpdatePayload.terminalDate = now;
+    }
+
+    await updateDoc(releaseRef, sanitizeFirestorePayload(releaseUpdatePayload));
 
     // Update the underlying change checklist
     const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
-    await updateDoc(checklistRef, sanitizeFirestorePayload({
-      status: 'Completed',
-      updatedDate: now
-    }));
+    const checklistSnap = await getDoc(checklistRef);
+    if (checklistSnap.exists()) {
+      const checklistData = checklistSnap.data() as ProjectChangeChecklist;
+      const currentItems = getChecklistItems(checklistData);
+
+      // Map passed status onto the checklist items
+      const passedPointIds = new Set(currentPoints.map(p => p.id));
+      const updatedChecklistItems = currentItems.map(item => {
+        if (passedPointIds.has(item.id)) {
+          const matchingPassed = currentPoints.find(p => p.id === item.id);
+          return {
+            ...item,
+            ...(releaseType === 'UAT' ? { uatStatus: 'Passed' as const, uatQaUser: qaUser, uatQaUserName: qaUserName, uatQaDate: now, uatQaComment: matchingPassed?.qaComment } : {}),
+            ...(releaseType === 'Production' ? { prodStatus: 'Passed' as const, prodQaUser: qaUser, prodQaUserName: qaUserName, prodQaDate: now, prodQaComment: matchingPassed?.qaComment } : {}),
+            ...(releaseType === 'Hotfix' ? { hotfixStatus: 'Passed' as const, hotfixQaUser: qaUser, hotfixQaUserName: qaUserName, hotfixQaDate: now, hotfixQaComment: matchingPassed?.qaComment } : {}),
+            needsDeveloperAction: false,
+            developerRetestReady: false
+          };
+        }
+        return item;
+      });
+
+      // Check if ALL points across the checklist are now Passed
+      let allPointsPassedInPhase = false;
+      if (releaseType === 'UAT') {
+        allPointsPassedInPhase = updatedChecklistItems.every(it => it.uatStatus === 'Passed');
+      } else if (releaseType === 'Production') {
+        allPointsPassedInPhase = updatedChecklistItems.every(it => it.prodStatus === 'Passed');
+      } else if (releaseType === 'Hotfix') {
+        allPointsPassedInPhase = updatedChecklistItems.every(it => it.hotfixStatus === 'Passed');
+      }
+
+      let newChecklistStatus: ChangeChecklistStatus = checklistData.status;
+      if (allPointsPassedInPhase) {
+        if (releaseType === 'UAT') {
+          newChecklistStatus = 'UAT Approved';
+        } else if (releaseType === 'Production') {
+          newChecklistStatus = 'Completed';
+        } else if (releaseType === 'Hotfix') {
+          newChecklistStatus = 'Hotfix Completed';
+        }
+      }
+
+      await updateDoc(checklistRef, sanitizeFirestorePayload({
+        items: updatedChecklistItems,
+        status: newChecklistStatus,
+        ...(allPointsPassedInPhase && releaseType === 'UAT' ? { uatApprovedDate: now } : {}),
+        currentReleaseId: null,
+        currentReleaseName: null,
+        updatedDate: now
+      }));
+    }
   }
 
   async rejectReleaseChangeItem(
@@ -3742,7 +3938,8 @@ class DBService {
     qaUser: string,
     qaUserName: string,
     failedPointIndex?: number,
-    failedPointText?: string
+    failedPointText?: string,
+    failedPointId?: string
   ): Promise<void> {
     if (!reason || !reason.trim()) {
       throw new Error("A rejection reason is mandatory.");
@@ -3753,6 +3950,7 @@ class DBService {
     if (!releaseSnap.exists()) throw new Error("Release not found");
 
     const releaseData = releaseSnap.data() as ProductionRelease;
+    const releaseType = releaseData.releaseType || 'Production';
     const items = [...releaseData.items];
     const targetItemIndex = items.findIndex(it => it.changeChecklistId === checklistId);
 
@@ -3761,6 +3959,27 @@ class DBService {
     const targetItem = { ...items[targetItemIndex] };
     const now = new Date().toISOString();
 
+    // Mark the failed point in the release item
+    const currentPoints = getReleaseItemPoints(targetItem);
+    const updatedPoints = currentPoints.map((p, idx) => {
+      const isFailed = (failedPointId && p.id === failedPointId) || 
+                       (failedPointIndex !== undefined && idx === failedPointIndex) ||
+                       (failedPointText && p.text === failedPointText);
+      if (isFailed) {
+        return {
+          ...p,
+          status: 'Failed' as const,
+          qaUser,
+          qaUserName,
+          qaDate: now,
+          qaComment: reason.trim()
+        };
+      }
+      return p;
+    });
+
+    targetItem.points = updatedPoints;
+    targetItem.verificationItems = updatedPoints;
     targetItem.status = 'Rejected';
     targetItem.rejectionReason = reason.trim();
     targetItem.qaUser = qaUser;
@@ -3769,35 +3988,215 @@ class DBService {
 
     items[targetItemIndex] = targetItem;
 
-    // Update release status
+    // Update release status to Partially Rejected
     const allDecided = items.every(it => it.status !== 'Pending QA');
     const newReleaseStatus = allDecided ? 'Partially Rejected' : 'In QA';
 
-    await updateDoc(releaseRef, sanitizeFirestorePayload({ items, status: newReleaseStatus }));
+    await updateDoc(releaseRef, sanitizeFirestorePayload({ 
+      items, 
+      status: newReleaseStatus,
+      terminalDate: allDecided ? now : (releaseData.terminalDate || null)
+    }));
 
-    // Update underlying change checklist and preserve rejection history
+    // Update underlying change checklist: PRESERVE PASSED POINTS, return ONLY failed point!
     const checklistRef = doc(db, 'projectChangeChecklists', checklistId);
     const checklistSnap = await getDoc(checklistRef);
-    const existingHistory = checklistSnap.exists() && checklistSnap.data().rejectionHistory 
-      ? checklistSnap.data().rejectionHistory 
-      : [];
+    if (checklistSnap.exists()) {
+      const checklistData = checklistSnap.data() as ProjectChangeChecklist;
+      const existingHistory = checklistData.rejectionHistory || [];
+      const currentItems = getChecklistItems(checklistData);
 
-    const rejectionRecord: ChangeRejectionRecord = {
-      releaseId,
-      releaseName: releaseData.name,
-      rejectedBy: qaUser,
-      rejectedByName: qaUserName,
-      rejectedDate: now,
-      reason: reason.trim(),
-      ...(failedPointIndex !== undefined ? { failedPointIndex } : {}),
-      ...(failedPointText ? { failedPointText } : {})
-    };
+      // Identify the failed point ID
+      const targetFailedPointId = failedPointId || 
+        (failedPointIndex !== undefined && currentPoints[failedPointIndex] ? currentPoints[failedPointIndex].id : undefined) ||
+        (failedPointText ? currentPoints.find(p => p.text === failedPointText)?.id : undefined);
+
+      const updatedChecklistItems = currentItems.map(item => {
+        const isThisFailed = (targetFailedPointId && item.id === targetFailedPointId) ||
+                             (failedPointText && item.text === failedPointText);
+        if (isThisFailed) {
+          return {
+            ...item,
+            ...(releaseType === 'UAT' ? { uatStatus: 'Failed' as const, uatQaComment: reason.trim(), uatQaUser: qaUser, uatQaUserName: qaUserName, uatQaDate: now } : {}),
+            ...(releaseType === 'Production' ? { prodStatus: 'Failed' as const, prodQaComment: reason.trim(), prodQaUser: qaUser, prodQaUserName: qaUserName, prodQaDate: now } : {}),
+            ...(releaseType === 'Hotfix' ? { hotfixStatus: 'Failed' as const, hotfixQaComment: reason.trim(), hotfixQaUser: qaUser, hotfixQaUserName: qaUserName, hotfixQaDate: now } : {}),
+            needsDeveloperAction: true,
+            developerRetestReady: false
+          };
+        }
+        return item;
+      });
+
+      const rejectionRecord: ChangeRejectionRecord = {
+        releaseId,
+        releaseName: releaseData.name,
+        releaseType,
+        rejectedBy: qaUser,
+        rejectedByName: qaUserName,
+        rejectedDate: now,
+        reason: reason.trim(),
+        ...(failedPointIndex !== undefined ? { failedPointIndex } : {}),
+        ...(failedPointText ? { failedPointText } : {}),
+        ...(targetFailedPointId ? { failedPointId: targetFailedPointId } : {})
+      };
+
+      const newChecklistStatus: ChangeChecklistStatus = 
+        releaseType === 'UAT' ? 'Failed in UAT – Developer Action Required' :
+        releaseType === 'Production' ? 'Failed in Production – Developer Action Required' :
+        'Failed in Hotfix – Developer Action Required';
+
+      await updateDoc(checklistRef, sanitizeFirestorePayload({
+        items: updatedChecklistItems,
+        status: newChecklistStatus,
+        rejectionHistory: [...existingHistory, rejectionRecord],
+        currentReleaseId: null, // Release lock so follow-up release can be created
+        currentReleaseName: null,
+        updatedDate: now
+      }));
+    }
+  }
+
+  async markPointReadyForRetest(data: {
+    checklistId: string;
+    pointId: string;
+    comment: string;
+    developerEmail: string;
+    developerName: string;
+  }): Promise<void> {
+    const checklistRef = doc(db, 'projectChangeChecklists', data.checklistId);
+    const snap = await getDoc(checklistRef);
+    if (!snap.exists()) throw new Error("Checklist not found");
+
+    const checklistData = snap.data() as ProjectChangeChecklist;
+    const items = getChecklistItems(checklistData);
+    const now = new Date().toISOString();
+
+    const updatedItems = items.map(it => {
+      if (it.id === data.pointId) {
+        return {
+          ...it,
+          needsDeveloperAction: false,
+          developerRetestReady: true,
+          developerRetestComment: data.comment.trim(),
+          completedBy: data.developerEmail,
+          completedByName: data.developerName,
+          completedDate: now
+        };
+      }
+      return it;
+    });
 
     await updateDoc(checklistRef, sanitizeFirestorePayload({
-      status: 'Rejected by QA',
-      rejectionHistory: [...existingHistory, rejectionRecord],
+      items: updatedItems,
       updatedDate: now
     }));
+  }
+
+  async deleteEligibleReleases(data: {
+    releaseIds: string[];
+    deletedBy: string;
+    deletedByName: string;
+    forceAdminOverride?: boolean;
+    reason?: string;
+  }): Promise<{ deletedCount: number; operationId: string }> {
+    if (!data.releaseIds || data.releaseIds.length === 0) {
+      throw new Error("No releases selected for deletion.");
+    }
+
+    const operationId = `del-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    const nowTime = Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
+    // 1. Fetch all releases to verify terminal state, 7-day rule, and dependencies
+    const allReleases = await this.getProductionReleases();
+    const allReleaseMap = new Map(allReleases.map(r => [r.id!, r]));
+
+    const validDocsToDelete: string[] = [];
+    const releaseNames: string[] = [];
+    const targetIdsSet = new Set(data.releaseIds);
+
+    for (const relId of data.releaseIds) {
+      const relData = allReleaseMap.get(relId);
+      if (!relData) continue;
+
+      // Terminal check: Must be Completed, Partially Rejected, or Rejected
+      const isTerminal = 
+        relData.status === 'Completed' || 
+        relData.status === 'Partially Rejected' || 
+        relData.status === 'Rejected';
+
+      if (!isTerminal) {
+        throw new Error(
+          `Release "${relData.name}" cannot be deleted because it is still active (Status: "${relData.status}"). Only terminal records can be purged.`
+        );
+      }
+
+      // Dependency check: If this release has an active follow-up release not included in deletion, block
+      if (relData.followUpReleaseIds && relData.followUpReleaseIds.length > 0) {
+        for (const childId of relData.followUpReleaseIds) {
+          const childRel = allReleaseMap.get(childId);
+          if (childRel && !targetIdsSet.has(childId)) {
+            const childIsActive = childRel.status === 'In QA' || childRel.status === 'Pending QA';
+            if (childIsActive) {
+              throw new Error(
+                `Release "${relData.name}" cannot be deleted because active follow-up release "${childRel.name}" depends on it. Complete or delete the follow-up release first.`
+              );
+            }
+          }
+        }
+      }
+
+      // 7-day retention rule
+      const terminalTime = relData.terminalDate 
+        ? new Date(relData.terminalDate).getTime() 
+        : new Date(relData.createdDate).getTime();
+
+      const isEligible = (nowTime - terminalTime) >= sevenDaysMs;
+
+      if (!isEligible && !data.forceAdminOverride) {
+        const daysRemaining = Math.max(1, Math.ceil((sevenDaysMs - (nowTime - terminalTime)) / (24 * 60 * 60 * 1000)));
+        throw new Error(
+          `Release "${relData.name}" is not yet eligible for deletion under the 7-day retention rule (${daysRemaining} day(s) remaining).`
+        );
+      }
+
+      validDocsToDelete.push(relId);
+      releaseNames.push(relData.name);
+    }
+
+    if (validDocsToDelete.length === 0) {
+      throw new Error("None of the selected releases are eligible for deletion.");
+    }
+
+    // 2. Perform atomic batch deletion (NO EMAIL SENT)
+    const batch = writeBatch(db);
+    for (const relId of validDocsToDelete) {
+      const docRef = doc(db, 'productionReleases', relId);
+      batch.delete(docRef);
+    }
+
+    // 3. Record minimal audit entry
+    const logDocRef = doc(releaseDeletionLogsCollection);
+    const auditPayload: ReleaseDeletionLog = {
+      operationId,
+      deletedRecordIds: validDocsToDelete,
+      releaseNames,
+      deletedBy: data.deletedBy.toLowerCase(),
+      deletedByName: data.deletedByName,
+      deletionDate: now,
+      recordCount: validDocsToDelete.length,
+      reason: data.reason ? data.reason.trim() : undefined
+    };
+
+    batch.set(logDocRef, sanitizeFirestorePayload(auditPayload));
+
+    await batch.commit();
+
+    return {
+      deletedCount: validDocsToDelete.length,
+      operationId
+    };
   }
 
   async deleteCompletedProductionReleases(data: {
