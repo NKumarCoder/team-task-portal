@@ -419,7 +419,9 @@ export default function CreateReleaseDialog({
                     <button
                       type="button"
                       onClick={selectAllFiltered}
-                      className="text-[11px] text-purple-400 hover:underline font-semibold cursor-pointer"
+                      className={`text-[11px] hover:underline font-semibold cursor-pointer ${
+                        releaseType === 'UAT' ? 'text-cyan-400' : releaseType === 'Hotfix' ? 'text-rose-400' : 'text-purple-400'
+                      }`}
                     >
                       Select all
                     </button>
@@ -438,7 +440,9 @@ export default function CreateReleaseDialog({
 
               {loading ? (
                 <div className="py-8 text-center text-xs text-muted-foreground space-y-2">
-                  <Loader2 className="h-5 w-5 animate-spin mx-auto text-purple-400" />
+                  <Loader2 className={`h-5 w-5 animate-spin mx-auto ${
+                    releaseType === 'UAT' ? 'text-cyan-400' : releaseType === 'Hotfix' ? 'text-rose-400' : 'text-purple-400'
+                  }`} />
                   <p>Loading eligible change checklists...</p>
                 </div>
               ) : filteredChecklists.length === 0 ? (
@@ -461,21 +465,35 @@ export default function CreateReleaseDialog({
                         onClick={() => checklist.id && toggleSelect(checklist.id)}
                         className={`p-3 rounded-xl border flex items-start gap-3 transition-all cursor-pointer select-none ${
                           isSelected 
-                            ? 'bg-purple-500/10 border-purple-500/40 shadow-xs' 
+                            ? releaseType === 'UAT'
+                              ? 'bg-cyan-500/10 border-cyan-500/40 shadow-xs'
+                              : releaseType === 'Hotfix'
+                              ? 'bg-rose-500/10 border-rose-500/40 shadow-xs'
+                              : 'bg-purple-500/10 border-purple-500/40 shadow-xs'
                             : 'bg-card/40 border-card-border hover:bg-accent/25'
                         }`}
                       >
-                        <div className="mt-0.5 text-purple-400 shrink-0">
+                        <div className={`mt-0.5 shrink-0 ${
+                          isSelected
+                            ? releaseType === 'UAT' ? 'text-cyan-400' : releaseType === 'Hotfix' ? 'text-rose-400' : 'text-purple-400'
+                            : 'text-muted-foreground/60'
+                        }`}>
                           {isSelected ? (
                             <CheckSquare className="h-4 w-4" />
                           ) : (
-                            <Square className="h-4 w-4 text-muted-foreground/60" />
+                            <Square className="h-4 w-4" />
                           )}
                         </div>
 
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-bold text-purple-400 px-2 py-0.5 rounded bg-purple-500/15 border border-purple-500/20">
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                              releaseType === 'UAT'
+                                ? 'text-cyan-400 bg-cyan-500/15 border-cyan-500/20'
+                                : releaseType === 'Hotfix'
+                                ? 'text-rose-400 bg-rose-500/15 border-rose-500/20'
+                                : 'text-purple-400 bg-purple-500/15 border-purple-500/20'
+                            }`}>
                               {checklist.projectName}
                             </span>
                             <span className="text-[10px] text-muted-foreground font-medium flex items-center gap-1">
@@ -518,17 +536,23 @@ export default function CreateReleaseDialog({
               <button
                 type="submit"
                 disabled={submitting || selectedIds.size === 0}
-                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-purple-600 text-white text-xs font-bold hover:bg-purple-500 transition-all cursor-pointer disabled:opacity-50 shadow-md shadow-purple-600/20"
+                className={`flex items-center gap-1.5 px-5 py-2 rounded-xl text-white text-xs font-bold transition-all cursor-pointer disabled:opacity-50 shadow-md ${
+                  releaseType === 'UAT' 
+                    ? 'bg-cyan-600 hover:bg-cyan-500 shadow-cyan-600/20' 
+                    : releaseType === 'Hotfix'
+                    ? 'bg-rose-600 hover:bg-rose-500 shadow-rose-600/20'
+                    : 'bg-purple-600 hover:bg-purple-500 shadow-purple-600/20'
+                }`}
               >
                 {submitting ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    <span>Creating Release...</span>
+                    <span>Creating {parentRelease ? `Follow-up ${releaseType}` : releaseType} Release...</span>
                   </>
                 ) : (
                   <>
                     <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>Create Production Release ({selectedIds.size})</span>
+                    <span>Create {parentRelease ? `Follow-up ${releaseType}` : releaseType} Release ({selectedIds.size})</span>
                   </>
                 )}
               </button>
